@@ -30,7 +30,8 @@ class OddMonitor:
         wetness = float(getattr(weather, "wetness", 0.0))
         sun = float(getattr(weather, "sun_altitude_angle", 45.0))
         checks["precipitation"] = _inside(
-            precipitation, self.config["allowed_precipitation_percent"]
+            precipitation,
+            self.config["allowed_precipitation_percent"],
         )
         checks["wetness"] = _inside(wetness, self.config["allowed_wetness_percent"])
         checks["sun_altitude"] = _inside(sun, self.config["allowed_sun_altitude_deg"])

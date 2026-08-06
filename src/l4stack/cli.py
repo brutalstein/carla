@@ -26,10 +26,17 @@ def main() -> int:
     args = build_parser().parse_args()
     config = load_stack_config(Path(args.config_dir))
     level = config.logging["logging"].get("level", "INFO")
-    logging.basicConfig(level=getattr(logging, str(level).upper()), format="%(levelname)s %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, str(level).upper()),
+        format="%(levelname)s %(message)s",
+    )
 
     if args.command == "validate":
-        print(f"OK: {len(config.sensors)} sensors, required={config.required_sensor_names}")
+        contracts = ",".join(sorted(config.runtime.components))
+        print(
+            f"OK: {len(config.sensors)} sensors, required={config.required_sensor_names}, "
+            f"runtime_components={contracts}"
+        )
         return 0
     if args.command == "coverage":
         gaps = camera_azimuth_gaps(config.sensors)
