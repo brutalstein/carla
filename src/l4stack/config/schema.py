@@ -39,7 +39,9 @@ class SensorConfig:
         for key in ("name", "blueprint", "group", "transform"):
             if key not in value:
                 raise ConfigurationError(f"Sensor entry is missing '{key}'")
-        attrs = {str(key): _to_carla_string(item) for key, item in value.get("attributes", {}).items()}
+        attrs = {
+            str(key): _to_carla_string(item) for key, item in value.get("attributes", {}).items()
+        }
         return cls(
             name=str(value["name"]),
             blueprint=str(value["blueprint"]),
