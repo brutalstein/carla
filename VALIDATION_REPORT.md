@@ -2,29 +2,24 @@
 
 Date: 2026-08-06
 
-## Completed
+## Değişiklik kapsamı
 
-- YAML configuration load and schema checks: passed
-- Unique sensor name validation: passed
-- Required sensor declaration: passed
-- 360-degree horizontal camera coverage check: passed, no angular gaps
-- Exact-frame sensor synchronizer unit test: passed
-- Deterministic semantic LiDAR instance detector test: passed
-- Deterministic velocity tracker test: passed
-- Nominal ODD monitor test: passed
-- Python bytecode compilation: passed
+- Runtime algılama modülleri ve bunlara ait veri tipleri kaldırıldı.
+- Semantic LiDAR, semantic/instance sensör referansları kaldırıldı.
+- CARLA actor pose/velocity kullanan lokalizasyon adaptörü kaldırıldı.
+- GNSS/IMU planar error-state EKF eklendi.
+- Ground truth yalnızca test benchmark referansı olarak sınırlandı.
 
-Pytest result: **6 passed**.
+## Doğrulamalar
 
-## Not executed here
+- `pytest -q`: **6 passed**
+- `python -m compileall -q src tests`: passed
+- `l4stack --config-dir config validate`: 14 sensors, GNSS+IMU required
+- `l4stack --config-dir config coverage`: 360° camera azimuth coverage passed
+- WGS-84 local tangent plane round-trip: passed
+- Sentetik 5 m/s sabit hızlı benchmark RMSE: **0.20 m**
+- 100 m GNSS outlier NIS gate tarafından reddedildi
+- `git diff --check`: passed
 
-A CARLA server/runtime is not installed in the artifact execution environment, so
-an end-to-end spawn and sensor callback run was not executed. Use the following
-with CARLA running:
-
-```bash
-python -m l4stack.cli --config-dir config run --frames 20
-```
-
-The runtime intentionally fails if a required sensor blueprint, required sensor
-attribute, CARLA connection, or exact-frame sensor sample is unavailable.
+`ruff` artifact ortamında kurulu olmadığı için burada çalıştırılamadı. CARLA sunucusu da
+bulunmadığından gerçek actor spawn ve sensor callback entegrasyon koşusu yapılmadı.

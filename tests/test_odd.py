@@ -32,18 +32,18 @@ class FakeWorld:
 def test_nominal_odd() -> None:
     config = load_stack_config(ROOT / "config")
     monitor = OddMonitor(config.odd, config.sensors)
-    loc = LocalizationEstimate(
+    localization = LocalizationEstimate(
         frame=1,
         timestamp=0.05,
-        pose_world=Pose3(Vector3(0, 0, 0), Rotation3(0, 0, 0)),
-        velocity_world_mps=Vector3(0, 0, 0),
-        angular_velocity_world_dps=Vector3(0, 0, 0),
+        pose_local_enu=Pose3(Vector3(0, 0, 0), Rotation3(0, 0, 0)),
+        velocity_local_enu_mps=Vector3(0, 0, 0),
+        angular_rate_body_dps=Vector3(0, 0, 0),
         speed_mps=0.0,
-        position_std_m=0.01,
-        heading_std_deg=0.02,
+        position_std_m=0.5,
+        heading_std_deg=1.0,
         state=HealthState.NOMINAL,
         source="test",
     )
     bundle = {name: object() for name in config.required_sensor_names}
-    assessment = monitor.assess(FakeWorld(), loc, bundle)
+    assessment = monitor.assess(FakeWorld(), localization, bundle)
     assert assessment.state.value == "IN_ODD"

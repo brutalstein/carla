@@ -13,8 +13,13 @@ _REQUIRED_FILES = (
     "vehicle.yaml",
     "odd.yaml",
     "sensors.yaml",
-    "perception.yaml",
+    "localization.yaml",
     "logging.yaml",
+)
+_FORBIDDEN_RUNTIME_BLUEPRINT_FRAGMENTS = (
+    "ray_cast_semantic",
+    "semantic_segmentation",
+    "instance_segmentation",
 )
 
 
@@ -25,9 +30,9 @@ def load_stack_config(config_dir: str | Path) -> StackConfig:
 
     documents = {name: _load_yaml(root / name) for name in _REQUIRED_FILES}
     sensor_document = documents["sensors.yaml"]
-    raw_sensors = list(sensor_document.get("sensors", []))
-    raw_sensors.extend(_expand_near_field_sensors(sensor_document))
-    sensors = tuple(SensorConfig.from_mapping(item) for item in raw_sensors)
+    sensors = tuple(
+        SensorConfig.from_mapping(item) for item in list(sensor_document.get("sensors", []))
+    )
     _validate_unique_sensor_names(sensors)
 
     config = StackConfig(
@@ -36,7 +41,7 @@ def load_stack_config(config_dir: str | Path) -> StackConfig:
         vehicle=documents["vehicle.yaml"],
         odd=documents["odd.yaml"],
         sensors=sensors,
-        perception=documents["perception.yaml"],
+        localization=documents["localization.yaml"],
         logging=documents["logging.yaml"],
     )
     validate_stack_config(config)
@@ -51,11 +56,28 @@ def validate_stack_config(config: StackConfig) -> None:
     if fixed_delta <= 0.0:
         raise ConfigurationError("world.fixed_delta_seconds must be positive")
 
-    source = config.perception.get("perception", {}).get("source_sensor")
-    if source not in config.sensors_by_name:
-        raise ConfigurationError(f"Perception source sensor is not configured: {source}")
     if not config.required_sensor_names:
         raise ConfigurationError("At least one required sensor must be configured")
+
+    for sensor in config.sensors:
+        if any(fragment in sensor.blueprint for fragment in _FORBIDDEN_RUNTIME_BLUEPRINT_FRAGMENTS):
+            raise ConfigurationError(
+                f"Ground-truth sensor blueprint is forbidden at runtime: {sensor.blueprint}"
+            )
+
+    localization = config.localization.get("localization", {})
+    if localization.get("algorithm") != "planar_error_state_ekf":
+        raise ConfigurationError("localization.algorithm must be 'planar_error_state_ekf'")
+
+    for key in ("gnss_sensor", "imu_sensor"):
+        sensor_name = str(localization.get(key, ""))
+        sensor = config.sensors_by_name.get(sensor_name)
+        if sensor is None:
+            raise ConfigurationError(f"Localization sensor is not configured: {sensor_name}")
+        if not sensor.required:
+            raise ConfigurationError(f"Localization sensor must be required: {sensor_name}")
+        if sensor.group != "localization":
+            raise ConfigurationError(f"Localization sensor has wrong group: {sensor_name}")
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -66,30 +88,6 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ConfigurationError(f"YAML root must be a mapping: {path}")
     return data
-
-
-def _expand_near_field_sensors(document: dict[str, Any]) -> list[dict[str, Any]]:
-    defaults = document.get("near_field_defaults", {})
-    expanded: list[dict[str, Any]] = []
-    for raw in document.get("near_field_sensors", []):
-        expanded.append(
-            {
-                "name": raw["name"],
-                "blueprint": "sensor.other.obstacle",
-                "group": "near_field",
-                "required": False,
-                "transform": {
-                    "x": raw["x"],
-                    "y": raw["y"],
-                    "z": raw["z"],
-                    "roll": 0.0,
-                    "pitch": 0.0,
-                    "yaw": raw["yaw"],
-                },
-                "attributes": defaults,
-            }
-        )
-    return expanded
 
 
 def _validate_unique_sensor_names(sensors: tuple[SensorConfig, ...]) -> None:

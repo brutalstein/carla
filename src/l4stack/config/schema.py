@@ -22,7 +22,7 @@ class TransformConfig:
         missing = required - value.keys()
         if missing:
             raise ConfigurationError(f"Transform is missing keys: {sorted(missing)}")
-        return cls(**{k: float(value.get(k, 0.0)) for k in cls.__dataclass_fields__})
+        return cls(**{key: float(value.get(key, 0.0)) for key in cls.__dataclass_fields__})
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class SensorConfig:
         for key in ("name", "blueprint", "group", "transform"):
             if key not in value:
                 raise ConfigurationError(f"Sensor entry is missing '{key}'")
-        attrs = {str(k): _to_carla_string(v) for k, v in value.get("attributes", {}).items()}
+        attrs = {str(key): _to_carla_string(item) for key, item in value.get("attributes", {}).items()}
         return cls(
             name=str(value["name"]),
             blueprint=str(value["blueprint"]),
@@ -57,7 +57,7 @@ class StackConfig:
     vehicle: dict[str, Any]
     odd: dict[str, Any]
     sensors: tuple[SensorConfig, ...]
-    perception: dict[str, Any]
+    localization: dict[str, Any]
     logging: dict[str, Any]
 
     @property

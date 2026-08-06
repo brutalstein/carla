@@ -51,55 +51,19 @@ class Pose3:
 class LocalizationEstimate:
     frame: int
     timestamp: float
-    pose_world: Pose3
-    velocity_world_mps: Vector3
-    angular_velocity_world_dps: Vector3
+    pose_local_enu: Pose3
+    velocity_local_enu_mps: Vector3
+    angular_rate_body_dps: Vector3
     speed_mps: float
     position_std_m: float
     heading_std_deg: float
     state: HealthState
     source: str
-
-    def as_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["state"] = self.state.value
-        return data
-
-
-@dataclass(frozen=True)
-class BoundingBox3D:
-    center: Vector3
-    size: Vector3
-
-
-@dataclass(frozen=True)
-class Detection3D:
-    track_id: int
-    semantic_tag: int
-    class_name: str
-    point_count: int
-    confidence: float
-    bbox: BoundingBox3D
-    centroid: Vector3
-    velocity_ego_mps: Vector3
-    range_m: float
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class PerceptionFrame:
-    frame: int
-    timestamp: float
-    detections: tuple[Detection3D, ...]
-    source: str
-    health: HealthState
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        data["health"] = self.health.value
+        data["state"] = self.state.value
         return data
 
 

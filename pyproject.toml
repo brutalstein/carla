@@ -3,9 +3,9 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "carla-l4-perception-stack"
-version = "0.1.0"
-description = "Deterministic modular CARLA stack from vehicle/ODD through perception"
+name = "carla-l4-foundation"
+version = "0.2.0"
+description = "Deterministic CARLA vehicle, sensor, ODD and GNSS/IMU localization foundation"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [

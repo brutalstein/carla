@@ -1,0 +1,31 @@
+localization:
+  algorithm: "planar_error_state_ekf"
+  frame: "LOCAL_ENU"
+  gnss_sensor: "gnss_roof"
+  imu_sensor: "imu_center"
+
+  # Initial 1-sigma uncertainty.
+  initial_position_std_m: 3.0
+  initial_velocity_std_mps: 2.0
+  initial_heading_std_deg: 8.0
+  initial_accel_bias_std_mps2: 0.30
+  initial_gyro_bias_std_dps: 1.0
+
+  # Continuous-time IMU white noise and bias random walk.
+  accel_noise_std_mps2: 0.12
+  gyro_noise_std_dps: 0.20
+  accel_bias_random_walk_std_mps3: 0.015
+  gyro_bias_random_walk_std_dps2: 0.015
+
+  # Measurement models.
+  gnss_horizontal_std_m: 1.50
+  compass_std_deg: 2.0
+
+  # Chi-square innovation gates: 99% for 2 DoF and 1 DoF.
+  gnss_gate_chi2: 9.210
+  compass_gate_chi2: 6.635
+
+  max_dt_seconds: 0.20
+  maximum_position_std_m: 5.0
+  maximum_heading_std_deg: 10.0
+  max_consecutive_rejections: 5

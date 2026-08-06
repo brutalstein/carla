@@ -5,10 +5,10 @@ coordinate_convention:
   angles: "degrees"
 
 sensors:
-  - name: "lidar_semantic_top"
-    blueprint: "sensor.lidar.ray_cast_semantic"
-    group: "primary_perception"
-    required: true
+  - name: "lidar_top"
+    blueprint: "sensor.lidar.ray_cast"
+    group: "exteroception"
+    required: false
     transform: {x: 0.0, y: 0.0, z: 1.90, roll: 0.0, pitch: 0.0, yaw: 0.0}
     attributes:
       channels: 32
@@ -18,6 +18,10 @@ sensors:
       horizontal_fov: 360.0
       upper_fov: 10.0
       lower_fov: -30.0
+      noise_stddev: 0.02
+      dropoff_general_rate: 0.05
+      dropoff_intensity_limit: 0.8
+      dropoff_zero_intensity: 0.2
       sensor_tick: 0.05
 
   - name: "camera_front"
@@ -116,9 +120,9 @@ sensors:
     required: true
     transform: {x: -0.30, y: 0.00, z: 1.82, roll: 0.0, pitch: 0.0, yaw: 0.0}
     attributes:
-      noise_alt_stddev: 0.0
-      noise_lat_stddev: 0.0
-      noise_lon_stddev: 0.0
+      noise_alt_stddev: 2.50
+      noise_lat_stddev: 0.0000135
+      noise_lon_stddev: 0.0000135
       noise_alt_bias: 0.0
       noise_lat_bias: 0.0
       noise_lon_bias: 0.0
@@ -131,31 +135,14 @@ sensors:
     required: true
     transform: {x: 0.00, y: 0.00, z: 0.45, roll: 0.0, pitch: 0.0, yaw: 0.0}
     attributes:
-      noise_accel_stddev_x: 0.0
-      noise_accel_stddev_y: 0.0
-      noise_accel_stddev_z: 0.0
-      noise_gyro_stddev_x: 0.0
-      noise_gyro_stddev_y: 0.0
-      noise_gyro_stddev_z: 0.0
+      noise_accel_stddev_x: 0.05
+      noise_accel_stddev_y: 0.05
+      noise_accel_stddev_z: 0.08
+      noise_gyro_stddev_x: 0.002
+      noise_gyro_stddev_y: 0.002
+      noise_gyro_stddev_z: 0.002
+      noise_gyro_bias_x: 0.0
+      noise_gyro_bias_y: 0.0
+      noise_gyro_bias_z: 0.0005
       noise_seed: 20260806
       sensor_tick: 0.05
-
-near_field_defaults: &near_field_defaults
-  distance: 4.0
-  hit_radius: 0.35
-  only_dynamics: false
-  sensor_tick: 0.05
-
-near_field_sensors:
-  - {name: "near_front_left_outer",  x: 2.35,  y: -0.78, z: 0.42, yaw: -40.0}
-  - {name: "near_front_left_inner",  x: 2.38,  y: -0.28, z: 0.42, yaw: -10.0}
-  - {name: "near_front_right_inner", x: 2.38,  y: 0.28,  z: 0.42, yaw: 10.0}
-  - {name: "near_front_right_outer", x: 2.35,  y: 0.78,  z: 0.42, yaw: 40.0}
-  - {name: "near_rear_left_outer",   x: -2.30, y: -0.78, z: 0.42, yaw: -140.0}
-  - {name: "near_rear_left_inner",   x: -2.34, y: -0.28, z: 0.42, yaw: -170.0}
-  - {name: "near_rear_right_inner",  x: -2.34, y: 0.28,  z: 0.42, yaw: 170.0}
-  - {name: "near_rear_right_outer",  x: -2.30, y: 0.78,  z: 0.42, yaw: 140.0}
-  - {name: "near_left_front",        x: 1.15,  y: -0.94, z: 0.45, yaw: -90.0}
-  - {name: "near_left_rear",         x: -1.15, y: -0.94, z: 0.45, yaw: -90.0}
-  - {name: "near_right_front",       x: 1.15,  y: 0.94,  z: 0.45, yaw: 90.0}
-  - {name: "near_right_rear",        x: -1.15, y: 0.94,  z: 0.45, yaw: 90.0}

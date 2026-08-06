@@ -12,5 +12,4 @@ odd:
   required_localization_state: "NOMINAL"
   required_sensor_groups:
     - "localization"
-    - "primary_perception"
   exit_policy: "STOP_AND_HOLD"

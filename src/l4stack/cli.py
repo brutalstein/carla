@@ -10,7 +10,7 @@ from l4stack.sensors.coverage import camera_azimuth_gaps
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Deterministic CARLA L4 perception foundation")
+    parser = argparse.ArgumentParser(description="Deterministic CARLA L4 foundation")
     parser.add_argument("--config-dir", default="config", help="YAML configuration directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

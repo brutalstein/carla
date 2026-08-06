@@ -8,9 +8,8 @@ from typing import Any
 from l4stack.config.schema import StackConfig
 from l4stack.core.jsonlog import JsonlWriter
 from l4stack.core.lifecycle import destroy_actors
-from l4stack.localization.estimator import GroundTruthLocalizer
+from l4stack.localization import PlanarErrorStateEkf
 from l4stack.odd.monitor import OddMonitor
-from l4stack.perception.semantic_lidar import SemanticLidarInstanceDetector
 from l4stack.sensors.calibration import export_calibration
 from l4stack.sensors.factory import spawn_sensor_suite
 from l4stack.sensors.synchronizer import SensorSynchronizer
@@ -34,9 +33,7 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
 
     writer_path = output_dir / config.logging["logging"].get("jsonl_filename", "frames.jsonl")
     synchronizer = SensorSynchronizer()
-    localizer = GroundTruthLocalizer()
-    fixed_delta = float(config.simulator["world"]["fixed_delta_seconds"])
-    detector = SemanticLidarInstanceDetector(config.perception, fixed_delta)
+    localizer = PlanarErrorStateEkf(config.localization, config.sensors_by_name)
     odd_monitor = OddMonitor(config.odd, config.sensors)
     actors: list[Any] = []
 
@@ -65,25 +62,25 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
                     )
                     snapshot = world.get_snapshot()
                     timestamp = float(snapshot.timestamp.elapsed_seconds)
-                    localization = localizer.estimate(frame, timestamp, ego, bundle)
+                    localization = localizer.estimate(frame, timestamp, bundle)
                     odd = odd_monitor.assess(world, localization, bundle)
-                    perception = detector.detect(frame, timestamp, bundle)
-                    record = {
-                        "frame": frame,
-                        "timestamp": timestamp,
-                        "odd": odd.as_dict(),
-                        "localization": localization.as_dict(),
-                        "perception": perception.as_dict(),
-                    }
-                    writer.write(record)
+                    writer.write(
+                        {
+                            "frame": frame,
+                            "timestamp": timestamp,
+                            "odd": odd.as_dict(),
+                            "localization": localization.as_dict(),
+                        }
+                    )
                     every = int(config.logging["logging"].get("console_every_n_frames", 10))
                     if every > 0 and step % every == 0:
                         _LOG.info(
-                            "frame=%d odd=%s loc=%s detections=%d",
+                            "frame=%d odd=%s loc=%s pos_std=%.2fm heading_std=%.2fdeg",
                             frame,
                             odd.state.value,
                             localization.state.value,
-                            len(perception.detections),
+                            localization.position_std_m,
+                            localization.heading_std_deg,
                         )
         finally:
             destroy_actors(actors)
