@@ -1,0 +1,35 @@
+perception:
+  detector: "semantic_lidar_instance"
+  source_sensor: "lidar_semantic_top"
+  minimum_points_per_object: 4
+  maximum_range_m: 70.0
+  ignored_semantic_tags: [0, 1, 2, 3, 5, 6, 7, 8, 9, 11, 13, 14, 15, 16, 17, 21, 22]
+  keep_semantic_tags: []
+  track_ttl_frames: 4
+  velocity_alpha: 0.5
+  output_coordinate_frame: "ego"
+
+class_names:
+  4: "Pedestrian"
+  5: "Pole"
+  6: "RoadLine"
+  7: "Road"
+  10: "Vehicle"
+  11: "Wall"
+  12: "TrafficSign"
+  13: "Sky"
+  14: "Ground"
+  15: "Bridge"
+  16: "RailTrack"
+  17: "GuardRail"
+  18: "TrafficLight"
+  19: "Static"
+  20: "Dynamic"
+  21: "Water"
+  23: "Rider"
+  24: "Car"
+  25: "Truck"
+  26: "Bus"
+  27: "Train"
+  28: "Motorcycle"
+  29: "Bicycle"

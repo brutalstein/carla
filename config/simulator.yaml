@@ -1,0 +1,33 @@
+connection:
+  host: "127.0.0.1"
+  port: 2000
+  timeout_seconds: 10.0
+
+world:
+  map: "Town10HD_Opt"
+  reload_world: false
+  synchronous_mode: true
+  fixed_delta_seconds: 0.05
+  no_rendering_mode: false
+  seed: 20260806
+  weather:
+    cloudiness: 10.0
+    precipitation: 0.0
+    precipitation_deposits: 0.0
+    wind_intensity: 5.0
+    sun_azimuth_angle: 45.0
+    sun_altitude_angle: 60.0
+    fog_density: 0.0
+    fog_distance: 1000.0
+    wetness: 0.0
+
+traffic_manager:
+  enabled: false
+  port: 8000
+  seed: 20260806
+
+run:
+  frames: 400
+  sensor_timeout_seconds: 2.0
+  output_dir: "output"
+  save_every_n_frames: 20

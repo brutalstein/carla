@@ -1,0 +1,4 @@
+logging:
+  level: "INFO"
+  jsonl_filename: "frames.jsonl"
+  console_every_n_frames: 10
