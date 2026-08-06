@@ -37,7 +37,7 @@ class ExecutorProfile:
     priority: int
 
     @classmethod
-    def from_mapping(cls, name: str, value: dict[str, Any]) -> "ExecutorProfile":
+    def from_mapping(cls, name: str, value: dict[str, Any]):
         profile = cls(
             name=name,
             workers=int(value["workers"]),
@@ -67,7 +67,7 @@ class ComponentContract:
     drop_expired_inputs: bool = True
 
     @classmethod
-    def from_mapping(cls, name: str, value: dict[str, Any]) -> "ComponentContract":
+    def from_mapping(cls, name: str, value: dict[str, Any]):
         contract = cls(
             name=name,
             criticality=ExecutionCriticality(value["criticality"]),
