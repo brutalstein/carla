@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from l4stack.config.schema import SensorConfig, StackConfig
+from l4stack.config.schema import RuntimeConfig, SensorConfig, StackConfig
 from l4stack.errors import ConfigurationError
 
 _REQUIRED_FILES = (
@@ -14,6 +14,7 @@ _REQUIRED_FILES = (
     "odd.yaml",
     "sensors.yaml",
     "localization.yaml",
+    "runtime.yaml",
     "logging.yaml",
 )
 _FORBIDDEN_RUNTIME_BLUEPRINT_FRAGMENTS = (
@@ -42,6 +43,7 @@ def load_stack_config(config_dir: str | Path) -> StackConfig:
         odd=documents["odd.yaml"],
         sensors=sensors,
         localization=documents["localization.yaml"],
+        runtime=RuntimeConfig.from_mapping(documents["runtime.yaml"]),
         logging=documents["logging.yaml"],
     )
     validate_stack_config(config)
@@ -78,6 +80,18 @@ def validate_stack_config(config: StackConfig) -> None:
             raise ConfigurationError(f"Localization sensor must be required: {sensor_name}")
         if sensor.group != "localization":
             raise ConfigurationError(f"Localization sensor has wrong group: {sensor_name}")
+
+    contract = config.runtime.contract("localization")
+    if contract.max_input_age_s > config.runtime.sensor_bundle_lifespan_s:
+        raise ConfigurationError(
+            "localization max_input_age_s cannot exceed sensor bundle lifespan"
+        )
+    if "localization" not in config.runtime.executors:
+        raise ConfigurationError("runtime.executors.localization is required")
+    if config.runtime.executors["localization"].priority != contract.priority:
+        raise ConfigurationError(
+            "runtime localization executor priority must match component contract"
+        )
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

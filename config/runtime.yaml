@@ -1,0 +1,30 @@
+runtime:
+  # Message id'lerinin başına eklenir. Replay sırasında aynı namespace ve aynı input
+  # dizisi aynı sequence düzenini üretir.
+  namespace: "carla_l4"
+  sensor_bundle_lifespan_s: 0.10
+  lineage_max_records: 100000
+  deadline_event_history: 10000
+
+  # Executor profilleri gelecekteki katmanların aynı priority sınıflarını kullanması
+  # için şimdiden merkezi olarak tanımlıdır. Python runtime hard real-time garanti etmez.
+  executors:
+    safety:       {workers: 1, queue_capacity: 64,  priority: 0}
+    control:      {workers: 1, queue_capacity: 64,  priority: 10}
+    localization: {workers: 1, queue_capacity: 64,  priority: 20}
+    world_model:  {workers: 1, queue_capacity: 64,  priority: 30}
+    planning:     {workers: 1, queue_capacity: 64,  priority: 40}
+    perception:   {workers: 2, queue_capacity: 8,   priority: 50}
+    background:   {workers: 1, queue_capacity: 256, priority: 100}
+
+  components:
+    localization:
+      criticality: "FIRM_REALTIME"
+      priority: 20
+      max_input_age_s: 0.10
+      execution_budget_s: 0.020
+      expected_output_period_s: 0.075
+      output_lifespan_s: 0.15
+      channel_capacity: 2
+      overflow_policy: "DROP_OLDEST"
+      drop_expired_inputs: true
