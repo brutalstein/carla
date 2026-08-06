@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 from __future__ import annotations
 
 import hashlib
@@ -32,6 +33,7 @@ from l4stack.perception.manifest import verify_installation
 from l4stack.perception.orchestrator import ModelRoute, PerceptionPipeline
 from l4stack.perception.protocol import BackendProtocolError, InferenceResponse
 from l4stack.perception.types import ArtifactRef, PerceptionInput, PerceptionOutputKind
+from l4stack.sensors.synchronizer import SensorSynchronizer
 from l4stack.runtime.channel import OverflowPolicy
 from l4stack.runtime.clock import ManualClock
 from l4stack.runtime.context import RuntimeContext
@@ -45,7 +47,6 @@ from l4stack.runtime.executor import ExecutorRegistry, PriorityExecutor
 from l4stack.runtime.health import HealthRegistry, RuntimeHealth
 from l4stack.runtime.lineage import LineageStore
 from l4stack.runtime.message import MessageFactory
-from l4stack.sensors.synchronizer import SensorSynchronizer
 
 ROOT = Path(__file__).resolve().parents[1]
 
