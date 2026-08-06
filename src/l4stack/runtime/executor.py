@@ -3,10 +3,10 @@ from __future__ import annotations
 import itertools
 import queue
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from l4stack.runtime.clock import Clock, SteadyClock
 from l4stack.runtime.contracts import ExecutorProfile

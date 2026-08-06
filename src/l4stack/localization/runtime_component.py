@@ -43,7 +43,11 @@ class LocalizationRuntimeComponent(ManagedComponent):
         super().__init__(name=contract.name)
         self._runtime = runtime
         self._contract = contract
-        self._estimator = PlanarErrorStateEkf(localization_document, sensors_by_name)
+        # Estimator lifecycle configure aşamasında oluşturulur. Böylece cleanup sonrası
+        # yeniden configure edilen component eski filtre durumunu taşımaz.
+        self._localization_document = localization_document
+        self._sensors_by_name = sensors_by_name
+        self._estimator: PlanarErrorStateEkf | None = None
         self._output_factory = MessageFactory[LocalizationEstimate](
             source=self.name,
             clock=runtime.clock,
@@ -61,6 +65,10 @@ class LocalizationRuntimeComponent(ManagedComponent):
 
     def on_configure(self) -> None:
         self._runtime.deadlines.register(self._contract)
+        self._estimator = PlanarErrorStateEkf(
+            self._localization_document,
+            self._sensors_by_name,
+        )
         self._runtime.health.report(
             HealthReport(
                 component=self.name,
@@ -90,7 +98,12 @@ class LocalizationRuntimeComponent(ManagedComponent):
             )
         )
 
+    def on_cleanup(self) -> None:
+        # Yeniden configure edilirse filtre sıfır ve deterministik state ile başlar.
+        self._estimator = None
+
     def on_shutdown(self) -> None:
+        self._estimator = None
         self.output_channel.close()
 
     def process(
@@ -113,10 +126,14 @@ class LocalizationRuntimeComponent(ManagedComponent):
             )
             raise StaleLocalizationInput(input_events[-1].violation.value)
 
+        estimator = self._estimator
+        if estimator is None:
+            raise RuntimeError("Localization estimator is not configured")
+
         started_at = self._runtime.deadlines.start_execution()
         frame = input_message.payload
         try:
-            estimate = self._estimator.estimate(
+            estimate = estimator.estimate(
                 frame=frame.frame,
                 timestamp=frame.timestamp,
                 sensor_bundle=dict(frame.measurements),

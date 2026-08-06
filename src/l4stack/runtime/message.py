@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Generic, Mapping, TypeVar
+from typing import Any, Generic, TypeVar
 
 from l4stack.runtime.clock import Clock
 
