@@ -12,6 +12,7 @@ def test_loads_runtime_configuration_without_ground_truth_sensors() -> None:
     assert config.required_sensor_names == ("gnss_roof", "imu_center")
     assert config.localization["localization"]["algorithm"] == "planar_error_state_ekf"
     assert all("semantic" not in sensor.blueprint for sensor in config.sensors)
+    assert not config.perception.enabled
 
 
 def test_runtime_contracts_are_loaded_and_consistent() -> None:
@@ -21,3 +22,4 @@ def test_runtime_contracts_are_loaded_and_consistent() -> None:
     assert contract.output_lifespan_s > contract.max_input_age_s
     assert config.runtime.sensor_bundle_lifespan_s >= contract.max_input_age_s
     assert config.runtime.deadline_event_history == 10000
+    assert "perception_bevfusion_detection" in config.runtime.components

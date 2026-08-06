@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from l4stack.errors import ConfigurationError
+from l4stack.perception.config import PerceptionConfig
 from l4stack.runtime.contracts import ComponentContract, ExecutorProfile
 
 
@@ -113,6 +114,7 @@ class StackConfig:
     sensors: tuple[SensorConfig, ...]
     localization: dict[str, Any]
     runtime: RuntimeConfig
+    perception: PerceptionConfig
     logging: dict[str, Any]
 
     @property

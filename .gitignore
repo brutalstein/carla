@@ -10,3 +10,17 @@ output/
 *.egg-info/
 build/
 dist/
+
+# Üçüncü taraf model kodları ve büyük ağırlıklar repository'ye eklenmez.
+models/perception/*/external/*
+models/perception/*/model/*
+!models/perception/*/external/.gitkeep
+!models/perception/*/model/.gitkeep
+*.pth
+*.pt
+*.onnx
+*.engine
+*.plan
+*.safetensors
+*.tensor
+*.zip
