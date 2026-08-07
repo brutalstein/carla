@@ -1,0 +1,147 @@
+perception:
+  # Model dosyaları ve izole backend ortamları kurulana kadar false kalır. Böylece
+  # localization stack'i ağır CUDA/PyTorch bağımlılıkları olmadan çalışmaya devam eder.
+  enabled: false
+  input_lifespan_s: 0.30
+  snapshot_max_age_s: 0.75
+  artifact_retention_frames: 32
+
+  models:
+    bevfusion_detection:
+      enabled: false
+      adapter: "bevfusion_detection"
+      model_version: "mit-bevfusion-swint-v0p075-convfuser"
+      executor: "perception_bevfusion_detection"
+      runtime_component: "perception_bevfusion_detection"
+      target_rate_hz: 5.0
+      request_timeout_s: 0.20
+      max_sensor_skew_s: 0.10
+      cameras: &surround_cameras
+        - camera_front
+        - camera_front_right
+        - camera_back_right
+        - camera_back
+        - camera_back_left
+        - camera_front_left
+      lidar: "lidar_top"
+      backend:
+        command: ["bash", "models/perception/bevfusion_detection/run_backend.sh"]
+        working_directory: "."
+        required_environment: ["L4STACK_BEVFUSION_DETECTION_COMMAND"]
+        startup_timeout_s: 120.0
+        shutdown_timeout_s: 10.0
+        environment: {}
+      artifacts:
+        - path: "models/perception/bevfusion_detection/model/bevfusion-det.pth"
+          required: true
+          min_size_bytes: 1048576
+        - path: "models/perception/bevfusion_detection/model/cuda-bevfusion/model.zip"
+          required: false
+          min_size_bytes: 1048576
+
+    bevfusion_segmentation:
+      enabled: false
+      adapter: "bevfusion_segmentation"
+      model_version: "mit-bevfusion-fusion-bev256d2-lss"
+      executor: "perception_bevfusion_segmentation"
+      runtime_component: "perception_bevfusion_segmentation"
+      target_rate_hz: 2.0
+      request_timeout_s: 0.40
+      max_sensor_skew_s: 0.12
+      cameras: *surround_cameras
+      lidar: "lidar_top"
+      backend:
+        command: ["bash", "models/perception/bevfusion_segmentation/run_backend.sh"]
+        working_directory: "."
+        required_environment: ["L4STACK_BEVFUSION_SEGMENTATION_COMMAND"]
+        startup_timeout_s: 120.0
+        shutdown_timeout_s: 10.0
+        environment: {}
+      artifacts:
+        - path: "models/perception/bevfusion_segmentation/model/bevfusion-seg.pth"
+          required: true
+          min_size_bytes: 1048576
+
+    maptrv2:
+      enabled: false
+      adapter: "maptrv2"
+      model_version: "maptrv2-r50-bevpool-24ep"
+      executor: "perception_maptrv2"
+      runtime_component: "perception_maptrv2"
+      target_rate_hz: 5.0
+      request_timeout_s: 0.25
+      max_sensor_skew_s: 0.12
+      cameras: *surround_cameras
+      lidar: null
+      backend:
+        command: ["bash", "models/perception/maptrv2/run_backend.sh"]
+        working_directory: "."
+        required_environment: ["L4STACK_MAPTRV2_COMMAND"]
+        startup_timeout_s: 120.0
+        shutdown_timeout_s: 10.0
+        environment: {}
+      artifacts:
+        - path: "models/perception/maptrv2/model/maptrv2_r50_bevpool_24ep.pth"
+          required: true
+          min_size_bytes: 1048576
+
+    tld_ready:
+      enabled: false
+      adapter: "tld_ready"
+      model_version: "tld-ready-yolov8x"
+      executor: "perception_tld_ready"
+      runtime_component: "perception_tld_ready"
+      target_rate_hz: 10.0
+      request_timeout_s: 0.08
+      max_sensor_skew_s: 0.12
+      cameras:
+        - camera_front
+        - camera_front_right
+        - camera_front_left
+      lidar: null
+      backend:
+        command: ["bash", "models/perception/tld_ready/run_backend.sh"]
+        working_directory: "."
+        required_environment: ["L4STACK_TLD_READY_COMMAND"]
+        startup_timeout_s: 60.0
+        shutdown_timeout_s: 5.0
+        environment: {}
+      artifacts:
+        - path: "models/perception/tld_ready/model/traffic_lights_yolov8x.pt"
+          required: true
+          min_size_bytes: 1048576
+        - path: "models/perception/tld_ready/model/road_markingsyolov8m.pt"
+          required: false
+          min_size_bytes: 1048576
+
+    citysemsegformer:
+      enabled: false
+      adapter: "citysemsegformer"
+      model_version: "nvidia-citysemsegformer-deployable-onnx"
+      executor: "perception_citysemsegformer"
+      runtime_component: "perception_citysemsegformer"
+      target_rate_hz: 2.0
+      request_timeout_s: 0.40
+      max_sensor_skew_s: 0.12
+      cameras:
+        - camera_front
+        - camera_front_right
+        - camera_front_left
+      lidar: null
+      backend:
+        command: ["bash", "models/perception/citysemsegformer/run_backend.sh"]
+        working_directory: "."
+        required_environment: ["L4STACK_CITYSEMSEGFORMER_COMMAND"]
+        startup_timeout_s: 60.0
+        shutdown_timeout_s: 5.0
+        environment: {}
+      artifacts:
+        - path: "models/perception/citysemsegformer/model/citysemsegformer.onnx"
+          required: true
+          min_size_bytes: 1048576
+        - path: "models/perception/citysemsegformer/model/labels.txt"
+          required: true
+          min_size_bytes: 20
+        - path: "models/perception/citysemsegformer/model/nvinfer_config.txt"
+          required: false
+          min_size_bytes: 100

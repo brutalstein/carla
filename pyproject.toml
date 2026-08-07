@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "carla-l4-foundation"
-version = "0.3.0"
-description = "Deterministic CARLA runtime, sensor, ODD and GNSS/IMU localization foundation"
+version = "0.4.0"
+description = "Deterministic CARLA runtime, GNSS/IMU localization and isolated perception foundation"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [

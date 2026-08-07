@@ -6,81 +6,99 @@ CARLA Server
    ├── Lincoln MKZ Ego Vehicle
    ├── ODD Environment
    └── Raw Sensor Actors
-          │ callback
+          │ callbacks
           ▼
-   Exact-Frame Sensor Synchronizer
+   Sensor Synchronizer
           │
-          ▼
-   MessageEnvelope[SensorFrame]
-          │
-          ├── source timestamp / lifespan
-          ├── sequence / message id
-          └── lineage parent bilgisi
-          │
-          ▼
-   Priority Executor: localization
-          │
-          ▼
-   Managed Localization Component
-          │
-          ├── GNSS + IMU Planar ESKF
-          ├── Deadline/Freshness Monitor
-          ├── Health Registry
-          ├── Lineage Store
-          ├── Bounded Output Channel
-          └── Atomic Snapshot Store
-          │
-          ▼
-   MessageEnvelope[LocalizationEstimate]
-          │
-          ├── ODD Monitor
-          └── JSONL Runtime Diagnostics
+          ├───────────────────────────────────────────────────┐
+          │                                                   │
+          ▼                                                   ▼
+MessageEnvelope[SensorFrame]                    PerceptionArtifactStore
+          │                                      camera/LiDAR file:// refs
+          ▼                                                   │
+Priority Executor: localization                              ▼
+          │                               MessageEnvelope[PerceptionInput]
+          ▼                                                   │
+Managed Localization Component                  independent model executors
+          │                                      ├── BEVFusion Detection
+          ├── GNSS/IMU ESKF                     ├── BEVFusion Segmentation
+          ├── Deadline/Health                   ├── MapTRv2
+          ├── Snapshot/Lineage                  ├── TLD-READY
+          └── Bounded Channel                   └── CitySemSegFormer
+          │                                                   │
+          ▼                                                   ▼
+LocalizationEstimate                              normalized ModelOutput
+          │                                                   │
+          ├── ODD Monitor                                    ▼
+          │                                       partial PerceptionSnapshot
+          └──────────────────────┬────────────────────────────┘
+                                 ▼
+                         JSONL Diagnostics
 ```
 
-Runtime katmanı fonksiyonel algoritmalardan ayrıdır. Lokalizasyon, gelecekte eklenecek
-perception, world model, prediction, planning ve control bileşenleriyle aynı mesaj,
-lifecycle, zamanlama ve sağlık sözleşmelerini kullanır.
-
-## Runtime modülleri
+## Yatay runtime katmanı
 
 ```text
 src/l4stack/runtime/
-├── clock.py          # Simulation/steady/manual zaman kaynakları
-├── message.py        # Immutable, sürümlü ve zaman damgalı mesaj zarfı
-├── sensor_frame.py   # Exact-frame sensör bundle sözleşmesi
-├── channel.py        # Bounded queue ve taşma politikaları
-├── snapshot.py       # Atomik latest-valid snapshot deposu
-├── contracts.py      # Deadline, priority ve channel sözleşmeleri
-├── deadline.py       # Freshness, budget ve output-period denetimi
-├── health.py         # Merkezi component health registry
-├── lineage.py        # Çıktıdan girdiye veri soy ağacı
-├── lifecycle.py      # Managed component state machine
-├── executor.py       # Priority worker ve periodic scheduler
-├── supervisor.py     # Bağımlılık sıralı başlatma/kapatma
-└── context.py        # Ortak servis dependency injection nesnesi
+├── clock.py
+├── message.py
+├── sensor_frame.py
+├── channel.py
+├── snapshot.py
+├── contracts.py
+├── deadline.py
+├── health.py
+├── lineage.py
+├── lifecycle.py
+├── executor.py
+├── supervisor.py
+└── context.py
 ```
 
-## Temel bütünlük kuralları
+Fonksiyonel katmanlar ortak mutable state paylaşmaz. Mesajlar immutable, sürümlü,
+zaman damgalı ve validity sürelidir. Queue'lar bounded, output'lar atomik snapshot'tır.
 
-1. Katmanlar ortak mutable state paylaşmaz.
-2. Bir çıktı tamamlanmadan yayınlanmaz.
-3. Yayınlanan mesaj immutable kabul edilir.
-4. Her mesaj source time, publish time ve validity süresi taşır.
-5. Katmanlar tek bir snapshot sürümünü işlem boyunca sabit kullanır.
-6. Queue'lar bounded'dır; sınırsız backlog oluşmaz.
-7. Eski veya süresi dolmuş girdiler sözleşmeye göre reddedilir.
-8. Lifecycle geçişleri supervisor tarafından bağımlılık sırasıyla uygulanır.
-9. Normal veri zinciri lineage parent kimlikleriyle geriye izlenebilir.
-10. Python runtime hard real-time iddiasında bulunmaz; deadline ölçer ve ihlalleri görünür kılar.
+## Perception modülleri
 
-## Fail-fast davranışları
+```text
+src/l4stack/perception/
+├── types.py          # Input/output ve ArtifactRef sözleşmeleri
+├── protocol.py       # JSONL request/response sürümü
+├── backend.py        # İzole subprocess client ve test backend'i
+├── server.py         # Model-side JSONL server iskeleti
+├── adapters.py       # Model çıktısını ortak şemaya normalize eder
+├── config.py         # Model, process ve artifact manifest config'i
+├── manifest.py       # Dosya/hash/backend readiness kontrolü
+├── input.py          # CARLA BGRA/LiDAR artifact writer ve input publisher
+├── component.py      # Model başına lifecycle/deadline/health/lineage
+├── orchestrator.py   # Async fan-out, rate gate, backpressure, partial snapshot
+└── factory.py        # YAML'dan izole component/supervisor üretimi
+```
 
-- Yanlış veya eksik YAML: `ConfigurationError`
-- Ground-truth sensör blueprint'i: `ConfigurationError`
-- Geçersiz runtime contract: `ConfigurationError`
-- Geçersiz lifecycle geçişi: `LifecycleError`
-- Süresi dolmuş lokalizasyon girdisi: `StaleLocalizationInput`
-- Kapatılmış channel kullanımı: `ChannelClosed`
-- CARLA API import/connection sorunu: `CarlaConnectionError`
-- Gerekli sensor frame timeout: `SensorTimeoutError`
-- Gerekli blueprint/attribute yokluğu: çalışma başlamadan hata
+## Bütünlük kuralları
+
+1. Model framework bağımlılıkları ana stack ortamına kurulmaz.
+2. Her model ayrı OS süreci, executor ve lifecycle sahibidir.
+3. Bir modelin startup/inference hatası diğer modeli durdurmaz.
+4. Görüntü/nokta bulutu JSON içine gömülmez; artifact URI taşınır.
+5. Her artifact kaynak frame ve timestamp taşır.
+6. Farklı sensör hızları latest-at-or-before bariyeriyle korunur; sahte exact-frame yoktur.
+7. Sensör skew sınırını aşan girdi model çağrısından önce reddedilir.
+8. Model queue kapasitesi birdir; eski backlog oluşturulmaz.
+9. Artifact yalnız due model olduğunda yazılır; aynı frame cache üzerinden paylaşılır.
+10. Pipeline output'ların tamamını beklemez; latest-valid partial snapshot üretir.
+11. Kalıcı model hatası yalnız ilgili route'u devre dışı bırakır.
+12. Tüm çıktılar kaynak input message ID'sine lineage parent olarak bağlıdır.
+13. Output frame'i açıkça `EGO_LOCAL`, `EGO_BEV_RASTER` veya `CAMERA_PIXEL` olur.
+
+## Fail-fast ve degradation
+
+- Yanlış perception YAML: `ConfigurationError`.
+- Eksik model dosyası/backend env: ilgili model configure hatası.
+- Geçersiz veya stale input: ilgili frame reddedilir; model süreç hatasına alınmaz.
+- Backend timeout/protokol/inference hatası: ilgili model `ERROR/FAILED`.
+- Executor queue dolu: yalnızca ilgili submit reddedilir, diğer modeller devam eder.
+- Süresi dolmuş output: perception snapshot'tan çıkarılır.
+- Semantic/instance CARLA runtime blueprint'i: config yüklenirken reddedilir.
+
+Detaylar `docs/PERCEPTION_ARCHITECTURE.md` içindedir.

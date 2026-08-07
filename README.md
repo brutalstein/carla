@@ -1,73 +1,63 @@
-# CARLA L4 Runtime ve Lokalizasyon Temeli
+# CARLA L4 Runtime, Lokalizasyon ve Perception Temeli
 
-CARLA için modüler, deterministik ve yapılandırma odaklı araç, ODD, sensör, ortak
-runtime ve GNSS/IMU lokalizasyon temeli. Bu sürümde perception, fusion, prediction,
-planning ve control algoritmaları bulunmaz; bu katmanların kullanacağı ortak yürütme
-altyapısı hazırdır.
+CARLA için modüler, deterministik ve yapılandırma odaklı L4 araştırma stack'i. Mevcut
+sürüm ortak runtime, GNSS/IMU lokalizasyonu ve hazır checkpoint'lerle çalışacak süreç-
+izole perception mimarisini içerir. Fusion/world model, prediction, planning ve control
+algoritmaları henüz bulunmaz.
 
 ## Güncel kapsam
 
 1. **Araç / simülasyon platformu** — Lincoln MKZ 2020 ve kontrollü blueprint fallback.
 2. **ODD sınırı** — harita, hız, hava, görüş, lokalizasyon ve sensör sağlığı.
-3. **Raw sensör sistemi** — tek normal ray-cast LiDAR, 6 RGB kamera, 5 radar,
-   GNSS ve IMU.
+3. **Raw sensör sistemi** — tek ray-cast LiDAR, 6 RGB kamera, 5 radar, GNSS ve IMU.
 4. **Senkronizasyon** — synchronous CARLA, sabit 50 ms adım ve exact-frame GNSS/IMU.
 5. **Ortak runtime** — lifecycle, priority executor, bounded channel, immutable message,
    atomik snapshot, deadline/freshness, health, lineage ve supervisor.
-6. **Lokalizasyon runtime component'i** — GNSS + IMU + pusula planar ESKF.
+6. **Lokalizasyon** — GNSS + IMU + pusula planar error-state EKF.
+7. **Perception altyapısı** — BEVFusion Detection, BEVFusion Segmentation, MapTRv2,
+   TLD-READY ve CitySemSegFormer için izole backend, adapter, config, artifact transport,
+   model başına lifecycle/deadline/health ve partial snapshot.
 
-## Runtime veri akışı
+## Perception veri akışı
 
 ```text
-Exact-frame GNSS/IMU
-        ↓
-MessageEnvelope[SensorFrame]
-        ↓
-PriorityExecutor(localization)
-        ↓
-LocalizationRuntimeComponent
-        ↓
-MessageEnvelope[LocalizationEstimate]
-        ├── AtomicSnapshotStore
-        ├── BoundedChannel
-        ├── DeadlineMonitor
-        ├── HealthRegistry
-        └── LineageStore
+CARLA cameras + LiDAR + calibration
+                ↓
+        ArtifactRef transport
+                ↓
+ MessageEnvelope[PerceptionInput]
+                ↓
+      independent model routes
+       ├── BEVFusion Detection
+       ├── BEVFusion Segmentation
+       ├── MapTRv2
+       ├── TLD-READY
+       └── CitySemSegFormer
+                ↓
+       normalized ModelOutput
+                ↓
+        PerceptionSnapshot
 ```
 
-Katmanlar ortak mutable değişken düzenlemez. Her çıktı tamamlandıktan sonra immutable
-mesaj olarak yayınlanır; source time, publish time, validity ve parent message id taşır.
+Model bağımlılıkları ana Python ortamına kurulmaz. Her model ayrı conda/container
+sürecinde JSONL protokolüyle çalışır. Bir modelin açılmaması veya timeout olması diğer
+model component'lerini durdurmaz.
 
 Detaylı belgeler:
 
 - [`docs/RUNTIME_ARCHITECTURE.md`](docs/RUNTIME_ARCHITECTURE.md)
 - [`docs/RUNTIME_COMPONENT_GUIDE.md`](docs/RUNTIME_COMPONENT_GUIDE.md)
+- [`docs/PERCEPTION_ARCHITECTURE.md`](docs/PERCEPTION_ARCHITECTURE.md)
+- [`docs/PERCEPTION_MODEL_SOURCES.md`](docs/PERCEPTION_MODEL_SOURCES.md)
+- [`models/perception/README.md`](models/perception/README.md)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
 ## Ground-truth politikası
 
-Çalışma zamanı semantic LiDAR, semantic/instance kamera, actor transformu veya actor
-velocity kullanmaz. Bu blueprint'ler config doğrulamasında reddedilir. Ground truth
-yalnızca `tests/test_localization_benchmark.py` içinde algoritmik hata metriği üretmek
-için kullanılır; runtime girdisi değildir.
-
-## Lokalizasyon algoritması
-
-Durum:
-
-```text
-[p_e, p_n, v_e, v_n, yaw, b_ax, b_ay, b_gz]
-```
-
-- IMU propagation,
-- WGS-84 ECEF → local ENU,
-- GNSS anten lever-arm,
-- GNSS position update,
-- compass yaw update,
-- chi-square/NIS outlier gating,
-- Joseph covariance update,
-- accelerometer/gyro bias random walk,
-- covariance tabanlı health.
+Runtime semantic LiDAR, semantic/instance kamera, actor transformu veya actor velocity
+kullanmaz. Bu blueprint'ler config doğrulamasında reddedilir. Ground truth yalnızca
+offline benchmark/regression testlerinde referans olabilir; model runtime girdisine
+aktarılmaz.
 
 ## Kurulum
 
@@ -75,7 +65,7 @@ Durum:
 python -m venv .venv
 source .venv/bin/activate          # Linux
 # .venv\Scripts\activate           # Windows PowerShell
-pip install -e ".[dev]"
+python -m pip install -e '.[dev]'
 ```
 
 CARLA Python istemcisi CARLA sunucu sürümüyle eşleşmelidir.
@@ -85,9 +75,27 @@ CARLA Python istemcisi CARLA sunucu sürümüyle eşleşmelidir.
 ```bash
 l4stack --config-dir config validate
 l4stack --config-dir config coverage
+l4stack --config-dir config perception-doctor
 ```
 
-`validate`, 14 sensörü ve `localization` runtime contract'ını doğrular.
+`perception-doctor`, model dosyalarını, minimum boyutları, opsiyonel SHA-256 değerlerini,
+backend komutunu ve zorunlu environment değişkenlerini kontrol eder. Model dosyaları
+kurulana kadar perception varsayılan olarak kapalıdır.
+
+## Model kurulumu
+
+Model ağırlıkları Git repository'sine eklenmez. İndirme ve yerleştirme adımları:
+
+```text
+models/perception/bevfusion_detection/README.md
+models/perception/bevfusion_segmentation/README.md
+models/perception/maptrv2/README.md
+models/perception/tld_ready/README.md
+models/perception/citysemsegformer/README.md
+```
+
+Önce tek model kurup etkinleştir; health/deadline ölçümleri doğrulandıktan sonra diğer
+modelleri sırayla aç.
 
 ## CARLA çalıştırma
 
@@ -95,47 +103,42 @@ l4stack --config-dir config coverage
 l4stack --config-dir config run --frames 400
 ```
 
-Araç şu anda tam frenli bekler; sürüş kontrol katmanı yoktur.
+Araç şu anda tam frenli bekler; sürüş kontrol katmanı yoktur. Perception etkinse ana
+CARLA tick'i model sonucunu beklemez; modeller kendi executor hızlarında asenkron
+çalışır.
 
 Çıktılar:
 
 - `output/calibration.json`: sensör extrinsic ve attribute kayıtları,
-- `output/frames.jsonl`: ODD, lokalizasyon, message metadata, deadline ve health kayıtları.
-
-## Yapılandırma dosyaları
-
-- `config/simulator.yaml`: CARLA bağlantısı, map, timestep, seed ve hava.
-- `config/vehicle.yaml`: ego araç ve başlangıç kontrolü.
-- `config/sensors.yaml`: raw sensör placement ve sensör gürültüleri.
-- `config/localization.yaml`: ESKF covariance, noise ve gate değerleri.
-- `config/runtime.yaml`: executor profilleri, component contract, queue ve deadline.
-- `config/odd.yaml`: izin verilen operasyon koşulları.
-- `config/logging.yaml`: log seviyesi ve çıktı adı.
+- `output/perception_artifacts/`: bounded kamera/LiDAR artifact'ları,
+- `output/frames.jsonl`: ODD, lokalizasyon, perception snapshot, health ve deadline.
 
 ## Test ve kalite kapıları
 
 ```bash
-python -m compileall -q src tests
+python -m compileall -q src tests scripts
 pytest -q
 ruff check .
 ```
 
-Test paketi şunları kapsar:
+Perception testleri:
 
-- runtime message kimliği, validity ve immutability,
-- bounded channel taşma ve blocking davranışı,
-- atomik snapshot sürümleme,
-- lifecycle ve supervisor dependency sırası,
-- priority executor sırası,
-- deadline/freshness ihlalleri,
-- health ve lineage,
-- lokalizasyon runtime entegrasyonu,
-- ESKF benchmark ve GNSS outlier reddi,
-- geodesy, ODD, config, kamera kapsaması ve sensör frame bariyeri.
+- JSONL subprocess readiness ve inference round-trip,
+- beş repository wrapper'ının mock handshake'i,
+- model başına lifecycle ve hata izolasyonu,
+- stale input, timeout, protocol ve schema failure yolları,
+- rate gating, queue backpressure ve partial snapshot,
+- artifact manifest/minimum size/SHA-256 denetimi,
+- CARLA BGRA/LiDAR artifact yazımı ve frame cache,
+- kamera/LiDAR source-time skew kontrolü,
+- normalize BEV detection/segmentation/vector-map/light/image-mask çıktıları.
 
-## Gerçek zaman sınırı
+Gerçek model inference testleri, checkpoint ve GPU ortamı kurulunca model README'lerindeki
+resmî smoke testlerden sonra çalıştırılmalıdır.
 
-Python executor hard real-time garanti vermez. Mevcut altyapı queue büyümesini sınırlar,
-busy-spin'i önler, priority sınıfları uygular ve deadline ihlallerini kaydeder. Gerçek
-araç üretim ortamında RTOS/PREEMPT_RT, CPU affinity, process isolation ve safety
-sertifikasyon gereksinimleri ayrıca ele alınmalıdır.
+## Gerçek zaman ve doğruluk sınırı
+
+Python executor hard real-time garanti vermez. Disk tabanlı artifact transportu ilk
+entegrasyon ve replay içindir; düşük gecikmeli üretim akışında shared-memory veya CUDA
+IPC gerekir. Hazır modeller gerçek dünya dataset'leriyle eğitilmiştir; resmî benchmark
+sonuçları CARLA doğruluğu değildir. CARLA zero-shot metriği ayrıca ölçülmelidir.

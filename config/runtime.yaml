@@ -1,13 +1,11 @@
 runtime:
-  # Message id'lerinin başına eklenir. Replay sırasında aynı namespace ve aynı input
-  # dizisi aynı sequence düzenini üretir.
   namespace: "carla_l4"
   sensor_bundle_lifespan_s: 0.10
   lineage_max_records: 100000
   deadline_event_history: 10000
 
-  # Executor profilleri gelecekteki katmanların aynı priority sınıflarını kullanması
-  # için şimdiden merkezi olarak tanımlıdır. Python runtime hard real-time garanti etmez.
+  # Ağır perception modelleri ayrı executor kuyruğuna sahiptir. Bir modelin backlog veya
+  # timeout durumu diğer modelin görev kuyruğunu bloke etmez.
   executors:
     safety:       {workers: 1, queue_capacity: 64,  priority: 0}
     control:      {workers: 1, queue_capacity: 64,  priority: 10}
@@ -15,6 +13,11 @@ runtime:
     world_model:  {workers: 1, queue_capacity: 64,  priority: 30}
     planning:     {workers: 1, queue_capacity: 64,  priority: 40}
     perception:   {workers: 2, queue_capacity: 8,   priority: 50}
+    perception_tld_ready:              {workers: 1, queue_capacity: 1, priority: 45}
+    perception_bevfusion_detection:    {workers: 1, queue_capacity: 1, priority: 50}
+    perception_maptrv2:                {workers: 1, queue_capacity: 1, priority: 55}
+    perception_bevfusion_segmentation: {workers: 1, queue_capacity: 1, priority: 60}
+    perception_citysemsegformer:       {workers: 1, queue_capacity: 1, priority: 65}
     background:   {workers: 1, queue_capacity: 256, priority: 100}
 
   components:
@@ -27,4 +30,61 @@ runtime:
       output_lifespan_s: 0.15
       channel_capacity: 2
       overflow_policy: "DROP_OLDEST"
+      drop_expired_inputs: true
+
+    # Bunlar zero-shot CARLA benchmark'ından önceki başlangıç sözleşmeleridir. Model
+    # kurulunca p50/p95/p99 latency ölçümleriyle yeniden kalibre edilmelidir.
+    perception_tld_ready:
+      criticality: "FIRM_REALTIME"
+      priority: 45
+      max_input_age_s: 0.12
+      execution_budget_s: 0.080
+      expected_output_period_s: 0.15
+      output_lifespan_s: 0.25
+      channel_capacity: 1
+      overflow_policy: "LATEST_ONLY"
+      drop_expired_inputs: true
+
+    perception_bevfusion_detection:
+      criticality: "FIRM_REALTIME"
+      priority: 50
+      max_input_age_s: 0.15
+      execution_budget_s: 0.200
+      expected_output_period_s: 0.30
+      output_lifespan_s: 0.35
+      channel_capacity: 1
+      overflow_policy: "LATEST_ONLY"
+      drop_expired_inputs: true
+
+    perception_maptrv2:
+      criticality: "FIRM_REALTIME"
+      priority: 55
+      max_input_age_s: 0.18
+      execution_budget_s: 0.250
+      expected_output_period_s: 0.30
+      output_lifespan_s: 0.45
+      channel_capacity: 1
+      overflow_policy: "LATEST_ONLY"
+      drop_expired_inputs: true
+
+    perception_bevfusion_segmentation:
+      criticality: "SOFT_REALTIME"
+      priority: 60
+      max_input_age_s: 0.20
+      execution_budget_s: 0.400
+      expected_output_period_s: 0.65
+      output_lifespan_s: 0.75
+      channel_capacity: 1
+      overflow_policy: "LATEST_ONLY"
+      drop_expired_inputs: true
+
+    perception_citysemsegformer:
+      criticality: "SOFT_REALTIME"
+      priority: 65
+      max_input_age_s: 0.20
+      execution_budget_s: 0.400
+      expected_output_period_s: 0.65
+      output_lifespan_s: 0.75
+      channel_capacity: 1
+      overflow_policy: "LATEST_ONLY"
       drop_expired_inputs: true

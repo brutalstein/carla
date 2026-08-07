@@ -9,7 +9,7 @@ from l4stack.errors import SensorTimeoutError
 
 
 class SensorSynchronizer:
-    """Thread-safe exact-frame barrier for CARLA sensor callbacks."""
+    """Thread-safe exact-frame ve latest-at-or-before sensör bariyeri."""
 
     def __init__(self, retention_frames: int = 8) -> None:
         self._condition = threading.Condition()
@@ -49,6 +49,42 @@ class SensorSynchronizer:
                 if remaining <= 0.0:
                     raise SensorTimeoutError(
                         f"Frame {frame} timed out; missing required sensors: {missing}"
+                    )
+                self._condition.wait(remaining)
+
+    def wait_for_latest_at_or_before(
+        self,
+        frame: int,
+        sensor_names: tuple[str, ...],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        """Her sensörün hedef frame'den ileri olmayan son ölçümünü döndürür.
+
+        Kamera 10 Hz, dünya ve LiDAR 20 Hz çalışırken her sensörün aynı frame numarasına
+        sahip olması beklenmez. Bu bariyer ilk geçerli callback gelene kadar uyur ve
+        sonrasında model adapter'ının gerçek timestamp skew kontrolü yapacağı ölçümleri
+        döndürür. Busy-spin veya gelecekteki bir frame'in yanlışlıkla kullanımı yoktur.
+        """
+
+        if timeout_seconds <= 0.0:
+            raise ValueError("timeout_seconds must be positive")
+        names = tuple(dict.fromkeys(sensor_names))
+        deadline = time.monotonic() + timeout_seconds
+        with self._condition:
+            while True:
+                result = {
+                    name: data
+                    for name in names
+                    if (data := self._latest.get(name)) is not None
+                    and int(getattr(data, "frame", -1)) <= frame
+                }
+                missing = [name for name in names if name not in result]
+                if not missing:
+                    return result
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise SensorTimeoutError(
+                        f"Latest sensor wait for frame {frame} timed out; missing: {missing}"
                     )
                 self._condition.wait(remaining)
 

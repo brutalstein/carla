@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from l4stack.app.perception_runtime import PerceptionLoop
 from l4stack.config.schema import StackConfig
 from l4stack.core.actors import destroy_actors
 from l4stack.core.jsonlog import JsonlWriter
@@ -33,12 +34,7 @@ _LOG = logging.getLogger(__name__)
 
 
 def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
-    """CARLA stack'i ortak runtime altyapısı üzerinde çalıştırır.
-
-    Bu sürümde runtime'a taşınan ilk fonksiyonel bileşen lokalizasyondur. Sensör bundle
-    mesajı zaman damgalı bir envelope olarak üretilir; lokalizasyon çıktısı parent id,
-    freshness, deadline, health ve lineage bilgileriyle birlikte yayınlanır.
-    """
+    """Lokalizasyonu senkron, perception modellerini asenkron runtime'da çalıştırır."""
 
     carla, client, initial_world = connect(config.simulator)
     run_cfg = config.simulator["run"]
@@ -47,7 +43,8 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
     output_dir = (config.root.parent / str(run_cfg.get("output_dir", "output"))).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with (output_dir / "calibration.json").open("w", encoding="utf-8") as handle:
+    calibration_path = output_dir / "calibration.json"
+    with calibration_path.open("w", encoding="utf-8") as handle:
         json.dump(export_calibration(config.sensors), handle, ensure_ascii=False, indent=2)
 
     writer_path = output_dir / config.logging["logging"].get("jsonl_filename", "frames.jsonl")
@@ -55,12 +52,11 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
     odd_monitor = OddMonitor(config.odd, config.sensors)
     actors: list[Any] = []
 
-    # Simülasyon zamanı bütün fonksiyonel katmanların ortak source-time eksenidir.
     simulation_clock = SimulationClock()
     simulation_clock.update(0.0)
     processing_clock = SteadyClock()
-    health_registry = HealthRegistry()
-    deadline_monitor = DeadlineMonitor(
+    health = HealthRegistry()
+    deadlines = DeadlineMonitor(
         simulation_clock,
         processing_clock,
         maximum_events=config.runtime.deadline_event_history,
@@ -69,8 +65,8 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
     runtime = RuntimeContext(
         clock=simulation_clock,
         processing_clock=processing_clock,
-        deadlines=deadline_monitor,
-        health=health_registry,
+        deadlines=deadlines,
+        health=health,
         lineage=lineage,
     )
     localization_component = LocalizationRuntimeComponent(
@@ -80,16 +76,24 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
         config.runtime.contract("localization"),
         namespace=config.runtime.namespace,
     )
-    executor_registry = ExecutorRegistry(config.runtime.executors, processing_clock)
-    supervisor = RuntimeSupervisor(health_registry)
-    supervisor.register(localization_component)
-    supervisor_started = False
+    executors = ExecutorRegistry(config.runtime.executors, processing_clock)
+    localization_supervisor = RuntimeSupervisor(health)
+    localization_supervisor.register(localization_component)
+    localization_started = False
+    perception_loop: PerceptionLoop | None = None
 
     try:
-        localization_executor = executor_registry.get("localization")
-        supervisor.start_all()
-        supervisor_started = True
-        sensor_message_factory = MessageFactory[SensorFrame](
+        localization_executor = executors.get("localization")
+        localization_supervisor.start_all()
+        localization_started = True
+        perception_loop = PerceptionLoop.start(
+            config,
+            runtime,
+            executors,
+            output_dir,
+            calibration_path,
+        )
+        sensor_messages = MessageFactory[SensorFrame](
             source="sensor_synchronizer",
             clock=simulation_clock,
             coordinate_frame="CARLA_SENSOR_BUNDLE",
@@ -118,78 +122,96 @@ def run_stack(config: StackConfig, frames_override: int | None = None) -> Path:
                         config.required_sensor_names,
                         timeout,
                     )
-                    snapshot = world.get_snapshot()
-                    timestamp = float(snapshot.timestamp.elapsed_seconds)
+                    timestamp = float(world.get_snapshot().timestamp.elapsed_seconds)
                     simulation_clock.update(timestamp)
 
-                    # Aynı frame'e ait sensörler tek immutable SensorFrame görünümüne alınır.
-                    sensor_frame = SensorFrame(
-                        frame=frame,
-                        timestamp=timestamp,
-                        measurements=bundle,
-                    )
-                    sensor_message = sensor_message_factory.create(
-                        sensor_frame,
+                    sensor_message = sensor_messages.create(
+                        SensorFrame(frame=frame, timestamp=timestamp, measurements=bundle),
                         source_timestamp=timestamp,
                         lifespan_s=config.runtime.sensor_bundle_lifespan_s,
                     )
                     lineage.record(sensor_message)
-                    localization_future = localization_executor.submit(
+                    localization_message = localization_executor.submit(
                         "localization.process",
                         localization_component.process,
                         sensor_message,
                         priority=config.runtime.contract("localization").priority,
-                    )
-                    localization_message = localization_future.result(timeout=timeout)
+                    ).result(timeout=timeout)
                     localization = localization_message.payload
                     odd = odd_monitor.assess(world, localization, bundle)
-                    deadline_stats = deadline_monitor.stats("localization")
-                    health = health_registry.get("localization")
 
+                    perception_input, submitted = perception_loop.submit_frame(
+                        config=config,
+                        synchronizer=synchronizer,
+                        health=health,
+                        lineage=lineage,
+                        frame=frame,
+                        timestamp=timestamp,
+                        timeout=timeout,
+                        localization_message_id=localization_message.message_id,
+                    )
+                    perception = perception_loop.diagnostics(config, health, timestamp)
+                    perception["input_message"] = (
+                        None if perception_input is None else perception_input.metadata_dict()
+                    )
+                    perception["submitted_models"] = list(submitted)
+
+                    localization_deadline = deadlines.stats("localization")
+                    localization_health = health.get("localization")
                     writer.write(
                         {
                             "frame": frame,
                             "timestamp": timestamp,
                             "odd": odd.as_dict(),
                             "localization": localization.as_dict(),
+                            "perception": perception,
                             "runtime": {
                                 "sensor_message": sensor_message.metadata_dict(),
                                 "localization_message": localization_message.metadata_dict(),
                                 "localization_snapshot_version": (
                                     localization_component.output_snapshot.require().version
                                 ),
-                                "localization_health": None if health is None else health.as_dict(),
+                                "localization_health": (
+                                    None
+                                    if localization_health is None
+                                    else localization_health.as_dict()
+                                ),
                                 "localization_deadline": {
-                                    "executions": deadline_stats.executions,
-                                    "violations": deadline_stats.violations,
+                                    "executions": localization_deadline.executions,
+                                    "violations": localization_deadline.violations,
                                     "consecutive_violations": (
-                                        deadline_stats.consecutive_violations
+                                        localization_deadline.consecutive_violations
                                     ),
-                                    "last_execution_s": deadline_stats.last_execution_s,
-                                    "max_execution_s": deadline_stats.max_execution_s,
+                                    "last_execution_s": localization_deadline.last_execution_s,
+                                    "max_execution_s": localization_deadline.max_execution_s,
                                 },
                             },
                         }
                     )
                     every = int(config.logging["logging"].get("console_every_n_frames", 10))
                     if every > 0 and step % every == 0:
+                        output_count = len(perception["snapshot"]["outputs"])
                         _LOG.info(
                             "frame=%d odd=%s loc=%s pos_std=%.2fm heading_std=%.2fdeg "
-                            "runtime_health=%s deadline_miss=%d",
+                            "deadline_miss=%d perception_outputs=%d",
                             frame,
                             odd.state.value,
                             localization.state.value,
                             localization.position_std_m,
                             localization.heading_std_deg,
-                            "UNKNOWN" if health is None else health.state.value,
-                            deadline_stats.violations,
+                            localization_deadline.violations,
+                            output_count,
                         )
     finally:
         try:
-            if supervisor_started:
-                supervisor.stop_all()
+            if perception_loop is not None:
+                perception_loop.stop()
         finally:
-            # Lifecycle kapanışı hata verse bile worker ve CARLA actor kaynakları sızmaz.
-            executor_registry.shutdown_all(wait=True, cancel_pending=True)
-            destroy_actors(actors)
+            try:
+                if localization_started:
+                    localization_supervisor.stop_all()
+            finally:
+                executors.shutdown_all(wait=True, cancel_pending=True)
+                destroy_actors(actors)
+
     return writer_path
