@@ -1,66 +1,44 @@
-# TLD-READY Kurulumu
+# TLD-READY — RTX 5090 TensorRT
 
-## Görev
+## Kaynak
 
-Ön, ön-sol ve ön-sağ kameralarda trafik ışığı bbox, durum, pictogram ve mümkünse ego
-şeridi açısından relevance üretir.
+- https://github.com/KASTEL-MobilityLab/traffic-light-detection
 
-- Resmî repo: https://github.com/KASTEL-MobilityLab/traffic-light-detection
-- Yayın: IEEE ITSC 2024.
-- Lisans: AGPL-3.0.
-- Seçilen detector: `traffic_lights_yolov8x.pt`.
-
-Repository tablosu YOLOv8 XL için 0.87 precision, 0.74 recall ve 0.82 mAP50; road
-marking relevance için 0.96 precision/recall raporlar.
-
-## Kurulum ve ağırlıklar
-
-```bash
-cd models/perception/tld_ready/external
-git clone https://github.com/KASTEL-MobilityLab/traffic-light-detection.git
-cd traffic-light-detection/model_weights
-chmod +x download_weights.sh
-./download_weights.sh
-```
-
-Kopyala:
+Ağırlık:
 
 ```text
-traffic_lights_yolov8x.pt
-  → models/perception/tld_ready/model/traffic_lights_yolov8x.pt
-
-road_markingsyolov8m.pt (opsiyonel relevance)
-  → models/perception/tld_ready/model/road_markingsyolov8m.pt
+model/traffic_lights_yolov8x.pt
 ```
 
-## Runtime komutu
+Runtime engine:
 
-Resmî Docker veya ayrı Ultralytics ortamındaki runner'ı tanımla:
+```text
+model/traffic_lights_yolov8x-sm120.engine
+```
+
+TLD-READY critical sınıftadır ve ön üç kamerada 10 Hz çalışır. Küçük inference işi MPS
+altında ağır BEV/MapTR kernel'leriyle kontrollü overlap edebilir.
+
+## Export
+
+TLD worker image'ı PyTorch 2.12.1/CUDA 13.0 ve Ultralytics 8.4.104 içerir:
 
 ```bash
-export L4STACK_TLD_READY_COMMAND='python /absolute/path/to/tld_ready_backend.py'
+docker compose -f infra/perception/docker-compose.cuda.yml build tld-worker
+docker compose -f infra/perception/docker-compose.cuda.yml up -d tld-worker
 ```
 
-Çıktı:
+Engine hedef RTX 5090'da FP16 olarak export edilir. Export sonrası gerçek CARLA trafik
+ışığı görüntüleriyle state/pictogram sınıf eşlemesi doğrulanmalıdır.
 
-```json
-{
-  "traffic_lights": [{
-    "camera_name": "camera_front",
-    "bbox_xyxy": [100, 40, 120, 85],
-    "state": "RED",
-    "pictogram": "circle",
-    "confidence": 0.93,
-    "relevant_to_ego": true
-  }]
-}
+## Worker
+
+```bash
+export L4STACK_TLD_READY_COMMAND='docker exec -i l4stack-perception-tld <tld-jsonl-worker>'
 ```
 
-Relevance modeli hazır değilse `relevant_to_ego: null` kullan. Yan yol ışığını ego
-ışığı gibi işaretlemekten kaçınmak için `false` uydurulmaz.
+Output bbox'ları `CAMERA_PIXEL`, state `RED/YELLOW/GREEN/UNKNOWN`, confidence ve varsa
+ego relevance alanlarını taşımalıdır. Runtime CPU fallback kabul etmez.
 
-## Lisans notu
-
-AGPL-3.0 ve Ultralytics lisans koşulları ürün dağıtımı öncesi hukuk incelemesi ister.
-Bu repository'yi teknik olarak kullanabilmek, kapalı kaynak üründe otomatik lisans
-uygunluğu sağlamaz.
+Lisans: TLD-READY/Ultralytics AGPL/ticari lisans koşulları ürünleştirmeden önce hukuk
+incelemesi gerektirir.

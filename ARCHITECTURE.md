@@ -1,104 +1,123 @@
 # Sistem Mimarisi
 
 ```text
-CARLA Server
+CARLA Server — 20 Hz synchronous world
    │
-   ├── Lincoln MKZ Ego Vehicle
-   ├── ODD Environment
-   └── Raw Sensor Actors
-          │ callbacks
-          ▼
-   Sensor Synchronizer
-          │
-          ├───────────────────────────────────────────────────┐
-          │                                                   │
-          ▼                                                   ▼
-MessageEnvelope[SensorFrame]                    PerceptionArtifactStore
-          │                                      camera/LiDAR file:// refs
-          ▼                                                   │
-Priority Executor: localization                              ▼
-          │                               MessageEnvelope[PerceptionInput]
-          ▼                                                   │
-Managed Localization Component                  independent model executors
-          │                                      ├── BEVFusion Detection
-          ├── GNSS/IMU ESKF                     ├── BEVFusion Segmentation
-          ├── Deadline/Health                   ├── MapTRv2
-          ├── Snapshot/Lineage                  ├── TLD-READY
-          └── Bounded Channel                   └── CitySemSegFormer
-          │                                                   │
-          ▼                                                   ▼
-LocalizationEstimate                              normalized ModelOutput
-          │                                                   │
-          ├── ODD Monitor                                    ▼
-          │                                       partial PerceptionSnapshot
-          └──────────────────────┬────────────────────────────┘
-                                 ▼
-                         JSONL Diagnostics
+   ├── GNSS + IMU ──► exact-frame SensorFrame
+   │                      ↓
+   │               Localization executor
+   │                      ↓
+   │                 GNSS/IMU ESKF
+   │                      ↓
+   │              LocalizationEstimate
+   │
+   └── 6 RGB + LiDAR ─► latest-at-or-before barrier
+                          ↓ one host-copy
+                    POSIX shared-memory rings
+                          ↓ ArtifactRef + timestamp
+                    PerceptionInput envelope
+                          ↓ rate gate
+                    Global GPU admission
+                          ↓ CUDA MPS
+            ┌─────────────┼─────────────┬─────────────┐
+            ▼             ▼             ▼             ▼
+        BEVFusion       TLD-READY      MapTRv2    BEV/City Seg.
+        Detection       TensorRT       PyTorch       TensorRT
+            └─────────────┴─────────────┴─────────────┘
+                          ↓
+                partial PerceptionSnapshot
+                          ↓
+                 Future Fusion/World Model
 ```
 
-## Yatay runtime katmanı
+## Yatay runtime
 
 ```text
-src/l4stack/runtime/
-├── clock.py
-├── message.py
-├── sensor_frame.py
-├── channel.py
-├── snapshot.py
-├── contracts.py
-├── deadline.py
-├── health.py
-├── lineage.py
-├── lifecycle.py
-├── executor.py
-├── supervisor.py
-└── context.py
+clock / message / channel / snapshot / lifecycle / executor
+contracts / deadline / health / lineage / supervisor
 ```
 
-Fonksiyonel katmanlar ortak mutable state paylaşmaz. Mesajlar immutable, sürümlü,
-zaman damgalı ve validity sürelidir. Queue'lar bounded, output'lar atomik snapshot'tır.
+Mesajlar immutable ve sürümlüdür. Katmanlar ortak mutable state paylaşmaz. Queue'lar
+bounded, output'lar atomik latest-valid snapshot'tır.
 
-## Perception modülleri
+## Perception çekirdeği
 
 ```text
 src/l4stack/perception/
-├── types.py          # Input/output ve ArtifactRef sözleşmeleri
-├── protocol.py       # JSONL request/response sürümü
-├── backend.py        # İzole subprocess client ve test backend'i
-├── server.py         # Model-side JSONL server iskeleti
-├── adapters.py       # Model çıktısını ortak şemaya normalize eder
-├── config.py         # Model, process ve artifact manifest config'i
-├── manifest.py       # Dosya/hash/backend readiness kontrolü
-├── input.py          # CARLA BGRA/LiDAR artifact writer ve input publisher
-├── component.py      # Model başına lifecycle/deadline/health/lineage
-├── orchestrator.py   # Async fan-out, rate gate, backpressure, partial snapshot
-└── factory.py        # YAML'dan izole component/supervisor üretimi
+├── types.py
+├── protocol.py
+├── backend_contracts.py
+├── backend_process.py
+├── server.py
+├── shared_memory.py
+├── gpu_admission.py
+├── adapters*.py
+├── config.py
+├── manifest.py
+├── input.py
+├── component.py
+├── orchestrator.py
+└── factory.py
 ```
 
-## Bütünlük kuralları
+## Bütünlük ve performans kuralları
 
-1. Model framework bağımlılıkları ana stack ortamına kurulmaz.
-2. Her model ayrı OS süreci, executor ve lifecycle sahibidir.
-3. Bir modelin startup/inference hatası diğer modeli durdurmaz.
-4. Görüntü/nokta bulutu JSON içine gömülmez; artifact URI taşınır.
-5. Her artifact kaynak frame ve timestamp taşır.
-6. Farklı sensör hızları latest-at-or-before bariyeriyle korunur; sahte exact-frame yoktur.
-7. Sensör skew sınırını aşan girdi model çağrısından önce reddedilir.
-8. Model queue kapasitesi birdir; eski backlog oluşturulmaz.
-9. Artifact yalnız due model olduğunda yazılır; aynı frame cache üzerinden paylaşılır.
-10. Pipeline output'ların tamamını beklemez; latest-valid partial snapshot üretir.
-11. Kalıcı model hatası yalnız ilgili route'u devre dışı bırakır.
-12. Tüm çıktılar kaynak input message ID'sine lineage parent olarak bağlıdır.
-13. Output frame'i açıkça `EGO_LOCAL`, `EGO_BEV_RASTER` veya `CAMERA_PIXEL` olur.
+1. Runtime'da sentetik/fake backend yoktur.
+2. Online sensör frame'i diske yazılmaz.
+3. Kamera/LiDAR JSON'a veya base64'e gömülmez.
+4. Sensör, calibration ve raster shared-memory slotları generation/lease ile korunur.
+5. Worker modeli startup'ta bir kez GPU'ya yükler.
+6. CUDA readiness doğrulanmadan model ACTIVE olmaz.
+7. CPU inference fallback yasaktır.
+8. Her model executor queue kapasitesi birdir.
+9. Global GPU admission bütçeye alınmayan işi queue'ya göndermez.
+10. Critical/required/opportunistic sınıfları tek GPU baskısını yönetir.
+11. CUDA MPS process context scheduling maliyetini azaltır.
+12. Bir model hatası diğer model lifecycle'ını kapatmaz.
+13. Snapshot bütün modelleri beklemez; son geçerli sonuçları birleştirir.
+14. Ground truth yalnız offline benchmark referansıdır.
+
+## Bağımlılık izolasyonu
+
+Host ana stack:
+
+```text
+Python 3.12 + NumPy + PyYAML
+```
+
+TensorRT worker:
+
+```text
+Ubuntu 24.04 + CUDA 13.3 + TensorRT 11.1
+```
+
+PyTorch/MapTR worker:
+
+```text
+Ubuntu 24.04 + CUDA 13.0 + PyTorch 2.12.1
+```
+
+TLD worker:
+
+```text
+PyTorch 2.12.1 + Ultralytics 8.4.104 + TensorRT export/runtime
+```
+
+MapTRv2 eski PyTorch 1.9/MMCV 1.4 environment'ıyla RTX 5090 üzerinde çalıştırılmaz.
+Modern port gerçek checkpoint ve gerçek altı kamera smoke testinden geçmelidir.
 
 ## Fail-fast ve degradation
 
-- Yanlış perception YAML: `ConfigurationError`.
-- Eksik model dosyası/backend env: ilgili model configure hatası.
-- Geçersiz veya stale input: ilgili frame reddedilir; model süreç hatasına alınmaz.
-- Backend timeout/protokol/inference hatası: ilgili model `ERROR/FAILED`.
-- Executor queue dolu: yalnızca ilgili submit reddedilir, diğer modeller devam eder.
-- Süresi dolmuş output: perception snapshot'tan çıkarılır.
-- Semantic/instance CARLA runtime blueprint'i: config yüklenirken reddedilir.
+- CUDA/RTX 5090/driver/MPS eksikliği: `cuda-doctor` başarısız.
+- Checkpoint veya SM120 engine eksikliği: `perception-doctor` başarısız.
+- Worker CPU readiness bildirirse configure başarısız.
+- Shared-memory slot yoksa frame bounded timeout ile atlanır.
+- GPU budget yetersizse düşük öncelikli model frame'i atlanır.
+- Backend timeout/protokol/inference hatası ilgili modeli `ERROR/FAILED` yapar.
+- Süresi dolmuş output snapshot'tan çıkarılır.
 
-Detaylar `docs/PERCEPTION_ARCHITECTURE.md` içindedir.
+Detaylar:
+
+- `docs/RTX5090_CUDA_SETUP.md`
+- `docs/PERCEPTION_ARCHITECTURE.md`
+- `docs/PERCEPTION_PERFORMANCE.md`

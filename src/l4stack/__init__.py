@@ -1,3 +1,3 @@
-"""Deterministic CARLA L4 runtime, localization and perception foundation stack."""
+"""Deterministic CARLA L4 CUDA perception, runtime and localization stack."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

@@ -1,268 +1,253 @@
-# Perception Katmanı Mimarisi
+# Perception Katmanı — RTX 5090 CUDA Runtime
 
 ## Amaç
 
-Bu katman, CARLA'daki altı RGB kamera ve tek 32 kanallı LiDAR girdisini dört bağımsız
-hazır model ailesine dağıtır:
-
-1. **BEVFusion Detection** — kamera + LiDAR 3B nesne algılama.
-2. **BEVFusion Segmentation** — kamera + LiDAR BEV semantik raster.
-3. **MapTRv2** — altı kameradan vektörel yol elemanları.
-4. **TLD-READY** — ön kameralarda trafik ışığı tespiti, durum ve relevance.
-5. **CitySemSegFormer** — ön kamera görüntülerinde piksel seviyesinde şehir semantiği.
-
-BEVFusion'ın detection ve segmentation checkpoint'leri ayrı model bileşenleridir; bu
-nedenle runtime açısından toplam beş model component'i vardır.
-
-## Neden tek Python ortamı kullanılmıyor?
-
-Model bağımlılıkları doğrudan çakışır:
-
-- MIT BEVFusion Python 3.8, PyTorch 1.9–1.10.2, MMCV 1.4.0 ve MMDetection 2.20.0 ister.
-- MapTRv2 Python 3.8, PyTorch 1.9.1, MMCV 1.4.0, MMDetection 2.14.0 ve
-  MMSegmentation 0.14.1 ister.
-- TLD-READY Ultralytics/YOLO ve kendi Docker akışını kullanır.
-- CitySemSegFormer NVIDIA TAO/TensorRT/DeepStream ONNX dağıtımıdır.
-
-Bu bağımlılıkları ana `l4stack` ortamına kurmak, lokalizasyon ve runtime paketinin
-tekrarlanabilirliğini bozar. Her model bu nedenle ayrı conda/container sürecinde
-çalışır. Ana süreç model framework'ünü import etmez.
-
-## Veri akışı
+Tek RTX 5090 üzerinde beş hazır modeli CARLA ana tick'ini bloklamadan, disk I/O
+oluşturmadan ve kontrolsüz CUDA process yarışına girmeden çalıştırmak.
 
 ```text
-CARLA callbacks
-      │ latest-at-or-before barrier
-      ├── 6 × RGB camera BGRA8
-      ├── raw ray-cast LiDAR float32
-      └── calibration.json
-      │
-      ▼
-PerceptionArtifactStore
-      │ yalnız due model periyodunda, frame-cache'li file:// ArtifactRef
-      ▼
-MessageEnvelope[PerceptionInput]
-      │ source time / validity / lineage
-      ├──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
-      ▼              ▼              ▼              ▼              ▼
-BEV Det.         BEV Seg.        MapTRv2       TLD-READY      CitySem
-process          process         process        process         process
-      │              │              │              │              │
-      ▼              ▼              ▼              ▼              ▼
-3D boxes        BEV raster      polylines      lights         image masks
-      └──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
-                                      │
-                                      ▼
-                           PerceptionSnapshot
-                                      │
-                                      ▼
-                         Fusion / World Model (sonraki katman)
+CARLA sensors
+      ↓ latest-at-or-before
+shared-memory producer
+      ↓ shm:// ArtifactRef
+rate gate
+      ↓
+global GPU admission
+      ↓
+CUDA MPS persistent workers
+      ↓
+normalized ModelOutput
+      ↓
+partial latest-valid snapshot
 ```
 
-## Ağır veri taşıma
+## Model rolleri
 
-JSONL protokolüne görüntü veya nokta bulutu base64 olarak gömülmez. Ana süreç ağır
-veriyi artifact dosyasına yazar ve yalnızca aşağıdaki metadata'yı yollar:
+- BEVFusion Detection: ana 3B nesne algılama, critical.
+- TLD-READY: trafik ışığı, critical.
+- MapTRv2: vektörel yol geometrisi, required.
+- BEVFusion Segmentation: yardımcı BEV raster, opportunistic.
+- CitySemSegFormer: kamera semantiği/doğrulama, opportunistic.
+
+## Shared-memory transport
+
+Frame başına disk dosyası, SHA-256 ve allocation yoktur. Her sensör lazy-first-use
+sırasında sabit boyutlu bir POSIX shared-memory ring alır. Kamera için BGRA8, LiDAR için
+CARLA `[x,y,z,intensity]` float32 byte düzeni korunur.
+
+```text
+camera slot: 2,500,000 bytes × 8
+lidar slot:  4,194,304 bytes × 8
+```
+
+Slot state:
+
+```text
+FREE
+ → producer reserved
+ → committed(reader_count = accepted model count)
+ → model future completions release
+ → FREE
+```
+
+Slot URI generation, slot ve capacity taşır. Eski token yeni generation'ı release edemez.
+Ring doluysa en fazla 5 ms beklenir; ana tick sınırsız bloklanmaz.
+
+Worker `open_shared_artifact()` ile `/dev/shm/<segment>` dosyasını read-only mmap eder.
+Consumer process `multiprocessing.resource_tracker` kullanmaz; producer'a ait segmenti
+worker shutdown sırasında yanlışlıkla unlink edemez.
+
+CARLA callback belleği dış kütüphaneye ait olduğu için minimum bir host-copy zorunludur.
+Bu copy doğrudan önceden ayrılmış slotadır. Worker tarafında pinned buffer ve non-blocking
+CUDA stream H2D kullanılması gerekir.
+
+## Global GPU admission
+
+Her model ayrı process olsa da tek fiziksel GPU kullanılır. Bu nedenle model executor
+queue'larından önce tek global admission uygulanır.
+
+Karar girdileri:
+
+- execution class,
+- priority,
+- rate gate,
+- global max concurrent,
+- model max inflight,
+- frame GPU budget,
+- başlangıç estimated GPU ms,
+- ölçülen rolling p95,
+- safety margin.
+
+Sınıflar:
+
+```text
+CRITICAL       BEVFusion Detection, TLD-READY
+REQUIRED       MapTRv2
+OPPORTUNISTIC  BEV Segmentation, CitySemSegFormer
+```
+
+Critical işler budget tahminini aşsa bile boş concurrency slotu varsa korunur.
+Opportunistic modeller baskı altında frame atlar. Hiçbir skipped iş queue'ya girmez.
+
+Varsayılan 20 Hz release bütçesi:
+
+```text
+frame budget = 42 ms
+max concurrent = 2
+safety margin = 1.15
+```
+
+Bu değerler tahmindir; gerçek RTX 5090 p95 ölçümünden sonra kalibre edilir.
+
+## CUDA MPS
+
+Model process izolasyonu korunur, fakat hepsi aynı GPU'ya bağlanır. CUDA MPS:
+
+- process CUDA context scheduling maliyetini azaltır,
+- küçük TLD kernel'lerinin ağır modele kontrollü overlap etmesine yardım eder,
+- process'lerin aynı MPS server ve aynı UID altında çalışmasını gerektirir.
+
+Compose `ipc: host`, aynı UID/GID ve MPS pipe mount kullanır. MPS fatal fault başka
+client'ları etkileyebileceği için worker health ve NVIDIA Xid logları ayrıca izlenmelidir.
+
+## Lifecycle ve CUDA readiness
+
+Model component configure aşamasında:
+
+1. checkpoint/engine preflight,
+2. worker process start,
+3. protocol ping,
+4. gerçek CUDA readiness,
+5. model_loaded doğrulaması
+
+yapar.
+
+CUDA zorunlu worker cevabı:
+
+```text
+device=cuda
+cuda_available=true
+cpu_fallback=false
+model_loaded=true
+compute_capability>=12.0
+precision=fp16/bf16/fp8
+```
+
+Bir model startup veya inference hatasında yalnız kendi route'unu kapatır. Diğer modeller
+çalışmaya devam eder. MPS fatal GPU fault davranışı nedeniyle GPU Xid/MPS fault ayrıca
+host supervisor tarafından izlenmelidir.
+
+## Worker process sözleşmesi
+
+JSONL yalnız kontrol ve metadata içindir. Kamera, LiDAR veya raster base64 olarak JSON'a
+gömülmez.
+
+### Ping
+
+```json
+{"protocol_version":2,"type":"ping"}
+```
+
+### Ready
 
 ```json
 {
-  "name": "camera_front",
-  "uri": "file:///.../camera_front.bgra8",
-  "media_type": "application/x-carla-bgra8",
-  "shape": [540, 960, 4],
-  "dtype": "uint8",
-  "byte_size": 2073600,
-  "source_frame": 1250,
-  "source_timestamp": 62.5
+  "protocol_version":2,
+  "type":"ready",
+  "device":"cuda",
+  "cuda_available":true,
+  "cpu_fallback":false,
+  "model_loaded":true,
+  "compute_capability":12.0,
+  "precision":"fp16"
 }
 ```
 
-İlk transport disk/replay odaklıdır. `ArtifactRef` URI sözleşmesi gelecekte
-`shm://` veya `cuda-ipc://` transportuna geçilebilmesi için model kodundan ayrıdır.
+### Inference
+
+Request, `PerceptionInput` ve `shm://` artifact referanslarını taşır. Worker response'u
+normalize adapter'ın beklediği küçük detection/polyline metadata'sını veya büyük output
+için worker-owned shared-memory artifact referansını döndürür. Yeni output eskisinin
+yerini aldığında, snapshot süresi dolduğunda veya stack kapandığında host protokol v2
+`release` mesajı gönderir. Worker ring slotunu `released` onayından sonra yeniden kullanır;
+maskenin okunurken overwrite edilmesine izin verilmez.
+
+## CUDA runtime kuralları
+
+- Model ve engine startup'ta bir kez yüklenir.
+- TensorRT execution context/binding buffer tekrar kullanılır.
+- PyTorch `torch.inference_mode()` ve autocast kullanır.
+- CPU fallback yasaktır.
+- CUDA memory allocation request başına yapılmaz.
+- PyTorch allocator `cudaMallocAsync` kullanır.
+- Sabit shape engine'lerde CUDA Graph capture değerlendirilir.
+- TensorRT engine hedef RTX 5090 / SM120 üzerinde üretilir.
+- Worker diagnostics CUDA event sürelerini döndürür.
 
 ## Zaman ve senkronizasyon
 
-Her sensör artifact'ı kendi CARLA frame ve timestamp bilgisini taşır. Model girdisinin
-referans zamanı ana CARLA tick zamanıdır. `SensorSynchronizer`, 10 Hz kamera ile 20 Hz
-LiDAR/dünya arasında exact-frame zorlaması yapmak yerine hedef frame'den ileri olmayan
-son ölçümü busy-spin yapmadan bekler. Adapter, model config'indeki `max_sensor_skew_s`
-sınırını aşan kamera veya LiDAR verisini reddeder.
+Dünya ve LiDAR 20 Hz, kameralar 10 Hz'dir. Kamera frame'i yapay olarak LiDAR frame
+numarasına çevrilmez. `latest-at-or-before` barrier hedef frame'den ileri olmayan son
+ölçümü verir. Artifact gerçek source frame ve timestamp taşır; adapter model bazındaki
+max sensor skew sınırını kontrol eder.
 
-Bu ayrım zorunludur; kameralar 10 Hz, LiDAR 20 Hz ve dünya 20 Hz çalıştığı için bütün
-artifact'ların aynı frame numarasında olması beklenmez. Eski veriyi güncelmiş gibi
-etiketlemek yerine gerçek yaşı korunur.
+## Backpressure
 
-## Model component yaşam döngüsü
+- Model executor queue kapasitesi 1.
+- GPU admission reddi queue öncesi.
+- Executor full ise submit reddedilir.
+- Shared-memory ring full ise bounded timeout.
+- Output channel `LATEST_ONLY`.
+- Model input süresi dolarsa task execution öncesi düşer.
+- Permanent component error route'u devre dışı bırakır.
+- Süresi dolmuş output snapshot'tan otomatik çıkarılır.
 
-Her model ayrı `ManagedComponent` olarak çalışır:
+## Ölçülebilirlik
 
-```text
-UNCONFIGURED
-    │ configure: artifact preflight + backend process start + ping
-    ▼
-INACTIVE
-    │ activate
-    ▼
-ACTIVE
-    │ inference / deadline / health
-    ├──────────────► ERROR
-    │ deactivate
-    ▼
-INACTIVE
-    │ cleanup: backend process stop
-    ▼
-UNCONFIGURED
-```
+`frames.jsonl` perception diagnostics:
 
-Her model için ayrı `RuntimeSupervisor` vardır. Bir modelin checkpoint'i eksik veya
-backend'i açılamıyorsa yalnızca o model finalized olur. Başarılı modeller çalışmaya
-devam eder. Inference hatası component'i `ERROR` durumuna taşırsa route otomatik olarak
-devre dışı kalır; her CARLA tick'inde aynı kalıcı hata yeniden üretilmez. Bu davranış
-başlangıç ve inference hatalarında test edilir.
+- submitted,
+- skipped_by_rate,
+- skipped_by_gpu_budget,
+- rejected_by_backpressure,
+- completed,
+- failed,
+- p50/p95/max observed request latency,
+- inflight,
+- shared-memory allocated/busy slot,
+- model health/deadline,
+- output source time ve validity
 
-## Executor ve backpressure
+alanlarını taşır.
 
-Her model ayrı, tek worker'lı ve kapasitesi bir olan priority executor kullanır.
-
-- `due_models()` her modelin hedef hızını source-time üzerinde belirler; sensör artifact'ı
-  yalnızca en az bir modelin periyodu geldiğinde oluşturulur.
-- Aynı kamera frame'i tekrar kullanılıyorsa artifact cache disk yazma ve SHA-256 hesabını
-  tekrar etmez.
-- Queue doluysa pipeline diğer modelleri submit etmeye devam eder.
-- Eski frame biriktirilmez.
-- Task çalışmaya başlamadan validity süresi dolarsa executor görevi düşürür.
-- Output channel `LATEST_ONLY` politikasındadır.
-- Pipeline her model için `submitted`, `skipped_by_rate`,
-  `rejected_by_backpressure`, `completed` ve `failed` sayaçlarını tutar.
-
-## Deadline sözleşmeleri
-
-Başlangıç sözleşmeleri `config/runtime.yaml` içindedir. Bunlar güvenlik garantisi veya
-nihai tuning değildir. Gerçek checkpoint ve GPU kurulduktan sonra CARLA replay ile
-p50/p95/p99 ölçülerek güncellenecektir.
-
-Her model için:
-
-- `max_input_age_s`: kabul edilen en eski girdi.
-- `execution_budget_s`: inference için hedef üst süre.
-- `expected_output_period_s`: iki başarılı çıktı arasında izin verilen süre.
-- `output_lifespan_s`: world model'in çıktıyı kullanabileceği süre.
-- `request_timeout_s`: model sürecinin cevap vermesi için sert IPC timeout'u.
-
-Config doğrulaması `request_timeout_s <= execution_budget_s` ve
-`expected_output_period_s >= 1 / target_rate_hz` koşullarını uygular.
-
-## JSONL backend protokolü
-
-Backend stdin/stdout üzerinden satır başına tek JSON mesajı kullanır.
-
-### Readiness
-
-Ana süreç:
-
-```json
-{"protocol_version":1,"type":"ping"}
-```
-
-Backend:
-
-```json
-{"protocol_version":1,"type":"ready"}
-```
-
-### Inference isteği
-
-```json
-{
-  "protocol_version": 1,
-  "type": "infer",
-  "request_id": "carla_l4/perception_input/42:maptrv2",
-  "model_name": "maptrv2",
-  "source_timestamp": 10.5,
-  "payload": {"frame": 210, "timestamp": 10.5, "cameras": []}
-}
-```
-
-### Başarılı yanıt
-
-```json
-{
-  "protocol_version": 1,
-  "type": "result",
-  "request_id": "carla_l4/perception_input/42:maptrv2",
-  "ok": true,
-  "payload": {"vector_map": [], "diagnostics": {"inference_ms": 70.0}}
-}
-```
-
-Request ID eşleşmezse, protokol sürümü farklıysa veya payload şeması bozuksa çıktı
-reddedilir.
-
-## Normalize edilmiş çıktılar
-
-### BEVFusion Detection
-
-`EGO_LOCAL` koordinat sisteminde:
-
-- sınıf
-- güven
-- 3B merkez
-- width/length/height
-- yaw
-- varsa x/y hız
-
-### BEVFusion Segmentation
-
-`EGO_BEV_RASTER` frame'inde tek raster artifact. Class index/label sürümü diagnostics
-alanında tutulmalıdır.
-
-### MapTRv2
-
-`EGO_LOCAL` frame'inde category, confidence ve xyz polyline noktaları. Seçilen standart
-R50 BEVPool 24ep checkpoint'i centerline checkpoint'i değildir. `MapTRv2*` daha sonra
-ayrı model sürümü olarak eklenebilir.
-
-### TLD-READY
-
-`CAMERA_PIXEL` frame'inde kamera adı, bbox, RED/YELLOW/GREEN/UNKNOWN durumu,
-pictogram, confidence ve `relevant_to_ego`. Relevance üretilmiyorsa `null` kullanılır;
-uydurma `false` yazılmaz.
-
-### CitySemSegFormer
-
-`CAMERA_PIXEL` frame'inde kamera başına semantic mask artifact'ı. Çoklu kamera maskesi
-tek raster gibi gösterilmez; `rasters[]` içinde ayrı adlarla taşınır.
-
-## CARLA koordinat adaptasyonu
-
-Model süreçleri şu dönüşümlerden sorumludur:
-
-1. CARLA BGRA8 → RGB.
-2. Kamera intrinsic matrisinin CARLA FOV ve çözünürlükten oluşturulması.
-3. `x forward, y right, z up` CARLA ego frame'inin model frame'ine dönüştürülmesi.
-4. LiDAR float32 `[x,y,z,intensity]` noktalarının model eksen/range sözleşmesine taşınması.
-5. Model çıktısının tekrar `EGO_LOCAL` sözleşmesine dönüştürülmesi.
-6. Resize/pad sonrası trafik ışığı bbox'larının orijinal kamera pikseline geri ölçeklenmesi.
-
-Bu dönüşümler model backend'indedir; ana runtime model-spesifik koordinat varsayımı
-yapmaz.
+`benchmark_guard.py`, gerçek output bulunmayan logu reddeder.
 
 ## Ground-truth politikası
 
-Runtime semantic/instance CARLA sensörü kullanmaz. CARLA ground truth yalnızca ileride:
-
-- offline benchmark,
-- precision/recall/mAP/mIoU ölçümü,
-- regression testi,
-- zero-shot domain-gap raporu
-
-için test aracında kullanılabilir. Runtime model girdisine aktarılmaz.
+Runtime semantic/instance CARLA sensörü kullanmaz. Ground truth yalnız offline
+precision/recall/mAP/mIoU ve regression metriğinde referanstır.
 
 ## Sınırlar
 
-- Hazır gerçek-dünya checkpoint'leri CARLA'da zero-shot çalışacaktır; CARLA doğruluğu
-  resmî nuScenes/DriveU/şehir benchmark sonuçlarıyla aynı kabul edilemez.
-- Bu PR model ağırlıklarını veya üçüncü taraf repository'leri dağıtmaz.
-- Model-side gerçek inference runner'ı seçilen resmî ortam içinde kurulmalıdır.
-- Disk artifact transportu nihai düşük-gecikmeli transport değildir.
-- Perception çıktıları henüz world model ile fuse edilmez; bu sonraki katmandır.
+Python host hard real-time değildir. CUDA worker ve shared-memory yolu düşük gecikmeli
+olsa da otomotiv safety certification sağlamaz. Hazır gerçek-dünya modellerinin CARLA
+zero-shot doğruluğu gerçek benchmark ile ölçülmelidir.
+
+## Worker output ring
+
+Segmentation worker'ları büyük maskeleri JSON içine koymaz. `WorkerOutputStore` her
+output adı için sabit-slotlu POSIX shared-memory ring oluşturur. Worker server şu şekilde
+bağlanır:
+
+```python
+store = WorkerOutputStore(WorkerOutputConfig(namespace="citysem"))
+server = JsonlBackendServer(
+    handler=run_inference,
+    ready_metadata=real_cuda_metadata,
+    release_handler=store.release,
+)
+```
+
+Model handler `store.publish(...)` ile `ArtifactRef` döndürür. Host snapshot output'unu
+değiştirince, expiry olduğunda veya shutdown'da protokol v2 `release` gönderir. Worker
+`released` cevabından önce slotu yeniden kullanmaz.

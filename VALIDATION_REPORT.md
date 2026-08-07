@@ -1,84 +1,70 @@
-# Validation Report
+# Validation Report — RTX 5090 CUDA Perception Hardening
 
 ## Kapsam
 
-Bu rapor ortak runtime/lokalizasyon tabanına eklenen süreç-izole perception mimarisinin
-yerel doğrulamasını özetler. Gerçek checkpoint inference benchmark'ı model dosyaları ve
-GPU ortamları kurulmadan çalıştırılmamıştır.
+Bu tur online perception veri yolundaki disk I/O, sentetik backend, kontrolsüz çoklu GPU
+submit ve CUDA readiness eksiklerini kapatır.
 
-## Perception testleri
+## Yerel doğrulamalar
 
-Çalıştırılan komut:
+Çalışma ortamında RTX 5090, CARLA server ve gerçek checkpoint bulunmadığı için gerçek
+GPU inference sonucu üretilmemiştir. Aşağıdaki doğrulamalar gerçek işletim sistemi
+shared-memory kaynağı ve gerçek child-process protokolüyle yapılmıştır:
 
-```bash
-PYTHONPATH=src python -m pytest -q tests/test_perception_core.py
-```
+- POSIX shared-memory byte round-trip.
+- Kamera/LiDAR ring slot boyutu ve shape kontrolü.
+- Producer reservation, consumer lease ve release.
+- Abort sonrası slotun tekrar kullanılabilmesi.
+- Stale generation/token reddi.
+- GPU admission class/priority/budget kararı.
+- Global ve model in-flight sınırı.
+- Out-of-order reservation completion.
+- Rolling p50/p95 ölçüm geri beslemesi.
+- CUDA readiness metadata kabul/red yolları.
+- CPU fallback readiness reddi.
+- Persistent JSONL protocol v2 start/infer/release/shutdown.
+- Calibration JSON'un host-path bağımsız immutable shared-memory artifact'ına taşınması.
+- WorkerOutputStore raster slot lease ve host release acknowledgement davranışı.
+- Normal shutdown'da future drain → output release → backend stop → input ring unlink sırası.
+- Wrapper dosyalarında mock yolunun bulunmaması.
+- Config deadline/rate/lifespan tutarlılığı.
 
-Sonuç:
-
-```text
-26 passed
-```
-
-Doğrulanan davranışlar:
-
-- ArtifactRef URI, boyut, shape ve source-time doğrulaması.
-- Duplicate kamera, eksik LiDAR ve sensor skew reddi.
-- BEVFusion 3B detection normalize şeması.
-- BEVFusion BEV raster normalize şeması.
-- MapTRv2 vector-map polyline şeması.
-- TLD-READY state/relevance şeması.
-- CitySemSegFormer çoklu kamera raster şeması.
-- Model component health, lineage ve atomik snapshot yayını.
-- Stale input ve inference failure yolu.
-- Priority executor üzerinde async rate gate ve yalnız-due-model artifact üretimi.
-- Manifest file size, SHA-256 ve backend komut kontrolü.
-- Gerçek subprocess stdin/stdout JSONL readiness ve inference round-trip.
-- Factory'nin yalnız etkin modelleri kurması ve lifecycle başlatması.
-- CARLA BGRA8/LiDAR float32 artifact yazımı, frame cache ve input parent lineage.
-- 10 Hz kamera / 20 Hz LiDAR için latest-at-or-before sensör bariyeri.
-- Kalıcı component hatasında route'un otomatik devre dışı bırakılması.
-- Repository içindeki beş `run_backend.sh` wrapper'ının ping ve inference handshake'i.
-- Hatalı readiness handshake sonrası child-process cleanup davranışı.
-- JSONL response `ok` alanının strict boolean doğrulaması.
-
-## Tam test paketi
-
-```bash
-PYTHONPATH=src python -m pytest -q
-```
-
-Sonuç:
+Özel yeni modül testi:
 
 ```text
-30 passed
+4 passed
 ```
 
-## Derleme
+Tam repository testi GitHub Actions üzerinde Python 3.10/3.11/3.12 matrisinde
+çalıştırılacaktır. PR CI sonucu görünmeden bu rapor tam test paketinin geçtiğini iddia
+etmez.
+
+## Üretim kabul kapıları
+
+RTX 5090 host'ta sırasıyla:
 
 ```bash
-PYTHONPATH=src python -m compileall -q src tests scripts
+l4stack --config-dir config cuda-doctor
+l4stack --config-dir config perception-doctor
+l4stack --config-dir config run --frames 400
+python scripts/perception/benchmark_guard.py output/frames.jsonl ...
 ```
 
-Sonuç: passed.
+çalıştırılmalıdır.
 
-## Yapılamayan doğrulamalar
+Bir model nominal kabul edilmeden:
 
-- BEVFusion, MapTRv2, TLD-READY ve CitySemSegFormer gerçek ağırlıkları bu çalışma
-  ortamında bulunmadığından gerçek GPU inference çalıştırılmadı.
-- CARLA sunucusu bulunmadığından actor/sensor callback entegrasyon koşusu yapılmadı.
-- İnternet/paket index erişimi olmadığı için yerel Ruff kurulamadı; repository CI
-  workflow'u Ruff ve tam pytest paketini çalıştıracaktır.
-- Resmî benchmark değerleri CARLA sonucu değildir. CARLA zero-shot metriği sonraki
-  validation aşamasında ground-truth yalnızca test referansı olarak ölçülmelidir.
+1. Gerçek checkpoint/engine yüklenmeli.
+2. Readiness `device=cuda`, `model_loaded=true`, `cpu_fallback=false` vermeli.
+3. Compute capability 12.0 doğrulanmalı.
+4. En az 400 gerçek CARLA frame'i işlenmeli.
+5. Failure rate ≤ %1 olmalı.
+6. Critical model deadline p95 altında kalmalı.
+7. VRAM OOM, Xid veya MPS fault oluşmamalı.
+8. CARLA ground truth yalnız offline doğruluk metriğinde kullanılmalı.
 
-## Kabul kriterleri
+## Açık model-port kapısı
 
-Model etkinleştirilmeden önce:
-
-1. `l4stack perception-doctor` ilgili model için READY vermeli.
-2. Resmî dataset/example smoke testi modelin kendi ortamında geçmeli.
-3. JSONL readiness/inference protokol testi geçmeli.
-4. CARLA replay testinde coordinate/calibration adapter doğrulanmalı.
-5. p50/p95/p99 inference süreleri runtime contract değerleriyle karşılaştırılmalı.
-6. Output class/frame/shape sözleşmeleri regression testine alınmalı.
+MapTRv2 resmî environment'ı RTX 5090 ile doğrudan uyumlu değildir. PyTorch 2.12/CUDA
+13 portu gerçek GPU'da doğrulanmadan ve `rtx5090_port_verified.json` üretilmeden model
+READY sayılmaz. Bu durum gizlenmez veya sentetik başarı dosyasıyla geçilmez.

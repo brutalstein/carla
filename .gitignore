@@ -10,6 +10,7 @@ output/
 *.egg-info/
 build/
 dist/
+infra/perception/.env
 
 # Üçüncü taraf model kodları ve büyük ağırlıklar repository'ye eklenmez.
 models/perception/*/external/*
