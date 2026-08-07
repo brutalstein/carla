@@ -1,88 +1,70 @@
-# BEVFusion Detection Kurulumu
+# BEVFusion Detection — RTX 5090
 
-## Görev ve seçilen sürüm
+## Kaynak
 
-Altı çevresel RGB kamera ile `lidar_top` nokta bulutundan 3B nesne kutuları üretir.
-Bu sürümde manifest'in beklediği model, MIT BEVFusion repository'sindeki:
+- MIT BEVFusion: https://github.com/mit-han-lab/bevfusion
+- NVIDIA CUDA-BEVFusion: https://github.com/NVIDIA-AI-IOT/Lidar_AI_Solution/tree/master/CUDA-BEVFusion
 
-```text
-config: configs/nuscenes/det/transfusion/secfpn/camera+lidar/
-        swint_v0p075/convfuser.yaml
-weight: bevfusion-det.pth
-```
-
-Çıktı `OBJECT_DETECTION_3D`, koordinat sistemi normalize edildikten sonra `EGO_LOCAL`.
-
-## Resmî kaynak ve sonuç
-
-- https://github.com/mit-han-lab/bevfusion
-- ICRA 2023, Apache-2.0.
-- nuScenes validation: 68.52 mAP, 71.38 NDS.
-
-## Ağırlığı indir
-
-Repo kökünde:
-
-```bash
-mkdir -p models/perception/bevfusion_detection/model
-wget -O models/perception/bevfusion_detection/model/bevfusion-det.pth \
-  'https://www.dropbox.com/scl/fi/ulaz9z4wdwtypjhx7xdi3/bevfusion-det.pth?rlkey=ovusfi2rchjub5oafogou255v'
-```
-
-Dosyanın burada olması gerekir:
+Ana checkpoint:
 
 ```text
-models/perception/bevfusion_detection/model/bevfusion-det.pth
+model/bevfusion-det.pth
 ```
 
-## Kod ortamı
+Runtime engine:
 
-Ana `l4stack` ortamına kurma. Ayrı container/conda ortamı kullan. MIT kodu için resmî
-bağımlılık aralığı Python 3.8, PyTorch 1.9–1.10.2, MMCV 1.4.0 ve MMDetection 2.20.0'dır.
+```text
+model/bevfusion-det-sm120.engine
+```
+
+## Neden NVIDIA CUDA-BEVFusion runtime?
+
+Orijinal eğitim deposu eski PyTorch/MMCV ortamındadır. Online inference için custom CUDA
+BEV pooling, sparse convolution ve TensorRT hattı bulunan NVIDIA implementasyonu hedeflenir.
+Checkpoint yalnız kaynak ağırlıktır; engine RTX 5090 compute capability 12.0 ve TensorRT
+11.1 üzerinde yeniden üretilir.
+
+## Kurulum
 
 ```bash
-cd models/perception/bevfusion_detection/external
-git clone https://github.com/mit-han-lab/bevfusion.git
+git clone https://github.com/NVIDIA-AI-IOT/Lidar_AI_Solution.git \
+  models/perception/bevfusion_detection/external/Lidar_AI_Solution
 ```
 
-Resmî Dockerfile da kullanılabilir. NVIDIA CUDA-BEVFusion TensorRT alternatifi ayrı bir
-model/config dağıtımıdır; MIT checkpoint ile aynı dosya gibi kullanılmamalıdır:
+Resmî checkpoint'i indirin ve `model/bevfusion-det.pth` konumuna yerleştirin. NVIDIA
+CUDA-BEVFusion build/export talimatını TensorRT worker image içinde çalıştırın. Build
+komutuna SM120 mimarisi eklenmeli ve eski `.engine` kopyalanmamalıdır.
 
-https://github.com/NVIDIA-AI-IOT/Lidar_AI_Solution/tree/master/CUDA-BEVFusion
+Engine smoke test gerçek altı CARLA kamera artifact'ı, LiDAR artifact'ı ve
+`output/calibration.json` ile yapılır. Sadece nuScenes örneğinin çalışması CARLA adapter
+başarısı sayılmaz.
 
-## Runtime komutu
+## Worker
 
-İzole ortam içindeki gerçek model runner'ı JSONL protokolünü uygulamalı ve çıktıyı
-`detections_3d` şemasına dönüştürmelidir. Komutu tanımla:
+Persistent worker komutu:
 
 ```bash
-export L4STACK_BEVFUSION_DETECTION_COMMAND='conda run -n bevfusion python /absolute/path/to/bevfusion_detection_backend.py'
+export L4STACK_BEVFUSION_DETECTION_COMMAND='docker exec -i l4stack-perception-trt <bevfusion-jsonl-worker>'
 ```
 
-`run_backend.sh` bu komutu başlatır. Model olmadan protokol testi:
+Worker gereksinimleri:
 
-```bash
-L4STACK_PERCEPTION_MOCK=1 \
-  bash models/perception/bevfusion_detection/run_backend.sh
-```
-
-## CARLA adapter sorumlulukları
-
-- BGRA8 → RGB.
-- Altı kamerayı config sırasına koyma.
-- Kamera intrinsic ve ego extrinsic matrislerini `calibration.json` içinden üretme.
-- Görüntüleri 256×704 pipeline'ına uygun resize/pad etme.
-- CARLA LiDAR `[x,y,z,intensity]` eksenlerini model eksenine çevirme.
-- Model kutularını tekrar CARLA `EGO_LOCAL` frame'ine döndürme.
-- Sınıf, confidence, merkez, W/L/H, yaw ve varsa hızı JSONL çıktısına yazma.
+- modeli startup'ta bir kez yüklemek,
+- TensorRT execution context ve binding buffer'larını tekrar kullanmak,
+- FP16 çalışmak,
+- sabit shape mümkünse CUDA Graph capture yapmak,
+- `shm://` kamera/LiDAR girdilerini async H2D kopyalamak,
+- 3B kutuları `EGO_LOCAL` koordinatına normalize etmek,
+- diagnostics içinde CUDA event `preprocess_ms`, `inference_ms`, `postprocess_ms` vermek.
 
 ## Etkinleştirme
 
-Önce:
+`perception-doctor` engine ve command'i READY gösterdikten sonra:
 
-```bash
-l4stack --config-dir config perception-doctor
+```yaml
+perception:
+  enabled: true
+  models:
+    bevfusion_detection:
+      enabled: true
 ```
-
-sonra `config/perception.yaml` içinde hem global `perception.enabled` hem de
-`bevfusion_detection.enabled` değerini `true` yap.

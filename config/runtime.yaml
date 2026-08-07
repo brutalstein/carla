@@ -4,15 +4,15 @@ runtime:
   lineage_max_records: 100000
   deadline_event_history: 10000
 
-  # Ağır perception modelleri ayrı executor kuyruğuna sahiptir. Bir modelin backlog veya
-  # timeout durumu diğer modelin görev kuyruğunu bloke etmez.
+  # Perception executor kuyruğu daima 1'dir. Global GPU admission controller kabul
+  # etmediği işi executor'a göndermez; eski frame backlog'u oluşmaz.
   executors:
     safety:       {workers: 1, queue_capacity: 64,  priority: 0}
     control:      {workers: 1, queue_capacity: 64,  priority: 10}
     localization: {workers: 1, queue_capacity: 64,  priority: 20}
     world_model:  {workers: 1, queue_capacity: 64,  priority: 30}
     planning:     {workers: 1, queue_capacity: 64,  priority: 40}
-    perception:   {workers: 2, queue_capacity: 8,   priority: 50}
+    perception:   {workers: 1, queue_capacity: 1,   priority: 50}
     perception_tld_ready:              {workers: 1, queue_capacity: 1, priority: 45}
     perception_bevfusion_detection:    {workers: 1, queue_capacity: 1, priority: 50}
     perception_maptrv2:                {workers: 1, queue_capacity: 1, priority: 55}
@@ -32,15 +32,13 @@ runtime:
       overflow_policy: "DROP_OLDEST"
       drop_expired_inputs: true
 
-    # Bunlar zero-shot CARLA benchmark'ından önceki başlangıç sözleşmeleridir. Model
-    # kurulunca p50/p95/p99 latency ölçümleriyle yeniden kalibre edilmelidir.
     perception_tld_ready:
       criticality: "FIRM_REALTIME"
       priority: 45
-      max_input_age_s: 0.12
-      execution_budget_s: 0.080
+      max_input_age_s: 0.10
+      execution_budget_s: 0.060
       expected_output_period_s: 0.15
-      output_lifespan_s: 0.25
+      output_lifespan_s: 0.20
       channel_capacity: 1
       overflow_policy: "LATEST_ONLY"
       drop_expired_inputs: true
@@ -48,10 +46,10 @@ runtime:
     perception_bevfusion_detection:
       criticality: "FIRM_REALTIME"
       priority: 50
-      max_input_age_s: 0.15
-      execution_budget_s: 0.200
-      expected_output_period_s: 0.30
-      output_lifespan_s: 0.35
+      max_input_age_s: 0.12
+      execution_budget_s: 0.120
+      expected_output_period_s: 0.15
+      output_lifespan_s: 0.25
       channel_capacity: 1
       overflow_policy: "LATEST_ONLY"
       drop_expired_inputs: true
@@ -59,10 +57,10 @@ runtime:
     perception_maptrv2:
       criticality: "FIRM_REALTIME"
       priority: 55
-      max_input_age_s: 0.18
-      execution_budget_s: 0.250
+      max_input_age_s: 0.16
+      execution_budget_s: 0.160
       expected_output_period_s: 0.30
-      output_lifespan_s: 0.45
+      output_lifespan_s: 0.40
       channel_capacity: 1
       overflow_policy: "LATEST_ONLY"
       drop_expired_inputs: true
@@ -71,7 +69,7 @@ runtime:
       criticality: "SOFT_REALTIME"
       priority: 60
       max_input_age_s: 0.20
-      execution_budget_s: 0.400
+      execution_budget_s: 0.300
       expected_output_period_s: 0.65
       output_lifespan_s: 0.75
       channel_capacity: 1
@@ -82,7 +80,7 @@ runtime:
       criticality: "SOFT_REALTIME"
       priority: 65
       max_input_age_s: 0.20
-      execution_budget_s: 0.400
+      execution_budget_s: 0.250
       expected_output_period_s: 0.65
       output_lifespan_s: 0.75
       channel_capacity: 1

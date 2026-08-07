@@ -20,6 +20,10 @@ class BackendHealth:
     ready: bool
     detail: str
     pid: int | None = None
+    metrics: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metrics", MappingProxyType(dict(self.metrics)))
 
 
 class ModelBackend(Protocol):
@@ -28,6 +32,8 @@ class ModelBackend(Protocol):
     def infer(self, request: InferenceRequest, timeout_s: float) -> Mapping[str, Any]: ...
 
     def health(self) -> BackendHealth: ...
+
+    def release(self, artifact_uris: tuple[str, ...], timeout_s: float = 1.0) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -81,6 +87,6 @@ class ProcessBackendConfig:
         missing = [
             name for name in self.required_environment if not available_environment.get(name)
         ]
-        if missing and available_environment.get("L4STACK_PERCEPTION_MOCK") != "1":
+        if missing:
             return False, f"required environment variables are missing: {missing}"
         return True, "command and required environment are resolvable"

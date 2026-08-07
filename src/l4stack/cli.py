@@ -6,6 +6,7 @@ from pathlib import Path
 
 from l4stack.app.runner import run_stack
 from l4stack.config.loader import load_stack_config
+from l4stack.perception.cuda_doctor import run_cuda_doctor
 from l4stack.perception.manifest import verify_installation
 from l4stack.sensors.coverage import camera_azimuth_gaps
 
@@ -23,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "perception-doctor",
         help="Check perception model files and configured backend prerequisites",
+    )
+    subparsers.add_parser(
+        "cuda-doctor",
+        help="Check RTX 5090, driver, VRAM, MPS, Docker and shared memory",
     )
     return parser
 
@@ -42,7 +47,8 @@ def main() -> int:
         print(
             f"OK: {len(config.sensors)} sensors, required={config.required_sensor_names}, "
             f"runtime_components={contracts}, perception_models={models}, "
-            f"perception_enabled={config.perception.enabled}"
+            f"perception_enabled={config.perception.enabled}, "
+            f"transport={config.perception.transport.mode}"
         )
         return 0
     if args.command == "coverage":
@@ -68,6 +74,12 @@ def main() -> int:
             if report.enabled and not report.ready:
                 failed_enabled = True
         return 2 if failed_enabled else 0
+    if args.command == "cuda-doctor":
+        report = run_cuda_doctor(config.perception)
+        for check in report.checks:
+            marker = "OK" if check.ok else "FAIL"
+            print(f"[{marker}] {check.name}: {check.detail}")
+        return 0 if report.ready else 2
     if args.command == "run":
         output = run_stack(config, args.frames)
         print(f"Output: {output}")

@@ -7,7 +7,7 @@ from typing import Any
 from l4stack.perception.types import PerceptionInput
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 class BackendProtocolError(RuntimeError):

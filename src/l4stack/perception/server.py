@@ -10,16 +10,35 @@ from l4stack.perception.types import PerceptionInput
 
 
 class JsonlBackendServer:
-    """Model ortamlarında kullanılacak küçük ve ortak stdin/stdout sunucusu."""
+    """Model container'larının kullandığı persistent CUDA worker protokolü.
+
+    ``release_handler`` worker-owned raster/output ring slotlarını host snapshot yaşam
+    süresi bittiğinde geri alır. Raster üreten worker bu callback'i sağlamalıdır.
+    """
 
     def __init__(
         self,
         handler: Callable[[PerceptionInput], Mapping[str, Any]],
         *,
+        ready_metadata: Mapping[str, Any],
+        release_handler: Callable[[tuple[str, ...]], None] | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
     ) -> None:
+        required = {
+            "device",
+            "cuda_available",
+            "cpu_fallback",
+            "model_loaded",
+            "compute_capability",
+            "precision",
+        }
+        missing = required - ready_metadata.keys()
+        if missing:
+            raise ValueError(f"ready_metadata eksik alanlar içeriyor: {sorted(missing)}")
         self._handler = handler
+        self._release_handler = release_handler
+        self._ready = dict(ready_metadata)
         self._input = input_stream
         self._output = output_stream
 
@@ -35,10 +54,19 @@ class JsonlBackendServer:
                 if int(value.get("protocol_version", -1)) != PROTOCOL_VERSION:
                     raise ValueError("unsupported protocol version")
                 if message_type == "ping":
-                    self._write({"protocol_version": PROTOCOL_VERSION, "type": "ready"})
+                    self._write(
+                        {
+                            "protocol_version": PROTOCOL_VERSION,
+                            "type": "ready",
+                            **self._ready,
+                        }
+                    )
                     continue
                 if message_type == "shutdown":
                     return
+                if message_type == "release":
+                    self._release(value)
+                    continue
                 if message_type != "infer":
                     raise ValueError(f"unsupported message type: {message_type}")
                 request_id = str(value["request_id"])
@@ -54,9 +82,7 @@ class JsonlBackendServer:
                     }
                 )
             except Exception as exc:
-                request_id = ""
-                if isinstance(value, dict):
-                    request_id = str(value.get("request_id", ""))
+                request_id = str(value.get("request_id", ""))
                 self._write(
                     {
                         "protocol_version": PROTOCOL_VERSION,
@@ -67,6 +93,24 @@ class JsonlBackendServer:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
+
+    def _release(self, value: Mapping[str, Any]) -> None:
+        request_id = str(value.get("request_id", ""))
+        raw_artifacts = value.get("artifacts", [])
+        if not request_id or not isinstance(raw_artifacts, list):
+            raise ValueError("invalid release request")
+        artifacts = tuple(str(item) for item in raw_artifacts)
+        if self._release_handler is None and artifacts:
+            raise RuntimeError("worker does not implement output artifact release")
+        if self._release_handler is not None:
+            self._release_handler(artifacts)
+        self._write(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "type": "released",
+                "request_id": request_id,
+            }
+        )
 
     def _write(self, value: Mapping[str, Any]) -> None:
         self._output.write(json.dumps(dict(value), separators=(",", ":")) + "\n")

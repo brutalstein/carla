@@ -1,69 +1,36 @@
-# BEVFusion Segmentation Kurulumu
+# BEVFusion Segmentation — RTX 5090
 
-## Görev ve seçilen sürüm
+## Kaynak
 
-Altı kamera ve LiDAR girdisinden ego merkezli BEV semantik raster üretir.
-Detection checkpoint'inden farklıdır.
+- https://github.com/mit-han-lab/bevfusion
 
-```text
-config: configs/nuscenes/seg/fusion-bev256d2-lss.yaml
-weight: bevfusion-seg.pth
-```
-
-Resmî nuScenes validation sonucu 62.95 mIoU'dur.
-
-Kaynak: https://github.com/mit-han-lab/bevfusion
-
-## İndirme
-
-```bash
-mkdir -p models/perception/bevfusion_segmentation/model
-wget -O models/perception/bevfusion_segmentation/model/bevfusion-seg.pth \
-  'https://www.dropbox.com/scl/fi/8lgd1hkod2a15mwry0fvd/bevfusion-seg.pth?rlkey=2tmgw7mcrlwy9qoqeui63tay9'
-```
-
-Beklenen yol:
+Dosyalar:
 
 ```text
-models/perception/bevfusion_segmentation/model/bevfusion-seg.pth
+model/bevfusion-seg.pth
+model/bevfusion-seg-sm120.engine
 ```
 
-## İzole bağımlılıklar
+Bu model opportunistic sınıftadır. BEVFusion Detection ve TLD-READY deadline baskısı
+oluşturduğunda global GPU admission controller segmentation frame'ini atlayabilir.
 
-- Python >=3.8,<3.9
-- PyTorch >=1.9,<=1.10.2
-- MMCV 1.4.0
-- MMDetection 2.20.0
-- OpenMPI 4.0.4 / mpi4py 3.0.3
-- Pillow 8.4.0
+## Engine
+
+Engine TensorRT 11.1 / CUDA 13.3 / RTX 5090 üzerinde yeniden üretilir. Custom operator
+ve preprocessing kodu orijinal model config'iyle aynı olmalıdır. Raster output `shm://`
+veya `cuda-ipc://` artifact olarak döndürülmeli; büyük maskeler JSON içine gömülmemelidir.
+
+## Worker
 
 ```bash
-cd models/perception/bevfusion_segmentation/external
-git clone https://github.com/mit-han-lab/bevfusion.git
+export L4STACK_BEVFUSION_SEGMENTATION_COMMAND='docker exec -i l4stack-perception-trt <bevfusion-seg-jsonl-worker>'
 ```
 
-Ana stack ortamına bu paketleri kurma.
+Worker startup'ta engine deserialize eder, buffer'ları önceden ayırır ve CPU fallback
+yapmaz. Varsayılan hız 2 Hz'dir.
 
-## Runtime komutu
+## Output lease
 
-```bash
-export L4STACK_BEVFUSION_SEGMENTATION_COMMAND='conda run -n bevfusion python /absolute/path/to/bevfusion_segmentation_backend.py'
-```
-
-Backend bir adet `EGO_BEV_RASTER` artifact döndürmelidir:
-
-```json
-{
-  "rasters": [{
-    "name": "bev_semantic",
-    "uri": "file:///.../bev_semantic.npy",
-    "media_type": "application/x-npy",
-    "shape": [H, W],
-    "dtype": "uint8",
-    "byte_size": 12345
-  }],
-  "diagnostics": {"inference_ms": 120.0, "class_order": ["drivable", "divider"]}
-}
-```
-
-Class order ve BEV metre/hücre çözünürlüğü diagnostics içinde sürümlenmelidir.
+Worker, `WorkerOutputStore` ile sabit-slotlu mask ring'i kullanır. `JsonlBackendServer`
+`release_handler=output_store.release` ile başlatılır. Host protokol v2 `release` onayı
+almadan slot tekrar kullanılamaz.

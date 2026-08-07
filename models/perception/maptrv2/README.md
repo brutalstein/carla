@@ -1,84 +1,64 @@
-# MapTRv2 Kurulumu
+# MapTRv2 — RTX 5090 Modern Port
 
-## Görev ve seçilen sürüm
+## Kaynak
 
-Altı çevresel kameradan online vektörel yol elemanları üretir:
+- Resmî repo: https://github.com/hustvl/MapTR
+- Branch: `maptrv2`
+- Checkpoint: MapTRv2 R50 BEVPool 24 epoch nuScenes
 
-- lane divider
-- road boundary
-- pedestrian crossing
-
-Seçilen model standart **MapTRv2 R50 + BEVPool, 24 epoch, nuScenes** checkpoint'idir.
-Resmî repository sonucu 61.4 mAP ve RTX 3090'da batch 1/altı kamera için 14.1 FPS'dir.
-Bu checkpoint centerline ekleyen `MapTRv2*` değildir.
-
-Kaynak: https://github.com/hustvl/MapTR/tree/maptrv2
-
-## İzole ortam
-
-Resmî kurulum:
-
-```bash
-conda create -n maptr python=3.8 -y
-conda activate maptr
-pip install torch==1.9.1+cu111 torchvision==0.10.1+cu111 \
-  torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
-pip install mmcv-full==1.4.0
-pip install mmdet==2.14.0
-pip install mmsegmentation==0.14.1
-pip install timm shapely==1.8.5.post1 av2
-```
-
-```bash
-cd models/perception/maptrv2/external
-git clone https://github.com/hustvl/MapTR.git
-cd MapTR
-git checkout maptrv2
-cd mmdetection3d && python setup.py develop
-cd ../projects/mmdet3d_plugin/maptr/modules/ops/geometric_kernel_attn
-python setup.py build install
-```
-
-Resmî ayrıntı:
-https://github.com/hustvl/MapTR/blob/maptrv2/docs/install.md
-
-## Checkpoint
-
-Resmî `MapTRv2 | R50 | bevpool | 24ep` checkpoint bağlantısı:
-
-https://drive.google.com/file/d/1AmQ3fT-J-MM4B8kh_9Gm2G5guM92Agww/view?usp=sharing
-
-İndirilen dosyayı şu adla yerleştir:
+Dosya:
 
 ```text
-models/perception/maptrv2/model/maptrv2_r50_bevpool_24ep.pth
+model/maptrv2_r50_bevpool_24ep.pth
 ```
 
-Google Drive bazen model yerine HTML indirir. Kontrol et:
+## Kritik uyumluluk notu
+
+Resmî kurulum Python 3.8, PyTorch 1.9 ve MMCV 1.4 dönemine aittir. Bu binary stack RTX
+5090 SM 12.0 için uygun değildir. Host veya runtime'da eski CUDA/PyTorch kurulmaz.
+
+RTX 5090 port ortamı:
+
+```text
+Python 3.12
+PyTorch 2.12.1 + CUDA 13.0
+TORCH_CUDA_ARCH_LIST=12.0
+MMCV CUDA ops source build
+Modern MMEngine/MMDetection/MMDetection3D API portu
+```
+
+Checkout:
 
 ```bash
-file models/perception/maptrv2/model/maptrv2_r50_bevpool_24ep.pth
-ls -lh models/perception/maptrv2/model/maptrv2_r50_bevpool_24ep.pth
+git clone --branch maptrv2 https://github.com/hustvl/MapTR.git \
+  models/perception/maptrv2/external/MapTR
 ```
 
-## Runtime komutu
+PyTorch worker image'ı:
 
 ```bash
-export L4STACK_MAPTRV2_COMMAND='conda run -n maptr python /absolute/path/to/maptrv2_backend.py'
+docker compose -f infra/perception/docker-compose.cuda.yml build maptr-worker
+docker compose -f infra/perception/docker-compose.cuda.yml up -d maptr-worker
 ```
 
-Backend çıktısı `EGO_LOCAL` metre cinsinden olmalıdır:
+MMCV'nin PyTorch 2.12/CUDA 13 hazır wheel'i yoksa kaynak koddan derlenir. Derleme başarılı
+olsa bile MapTRv2'nin registry/config/runner API farkları port edilmeden checkpoint
+çalışmayabilir. Port ancak şu gerçek kontrollerden sonra tamamlanmış sayılır:
 
-```json
-{
-  "vector_map": [{
-    "category": "lane_divider",
-    "confidence": 0.92,
-    "points_xyz_m": [[0.0, -1.8, 0.0], [10.0, -1.7, 0.0]]
-  }],
-  "diagnostics": {"inference_ms": 70.0}
-}
+1. `torch.cuda.get_device_capability() == (12, 0)`.
+2. Checkpoint eksiksiz yüklenir; beklenmeyen missing/unexpected key raporu incelenir.
+3. Altı gerçek CARLA kamera shared-memory girdisi okunur.
+4. En az bir gerçek vector-map output üretilir.
+5. 100 warm-up + 500 ölçüm inference benchmark'ı alınır.
+6. Sonuç ve dependency SHA'ları `model/rtx5090_port_verified.json` dosyasına yazılır.
+
+Bu doğrulama dosyası zorunlu artifact'tır; olmadan model READY değildir.
+
+## Worker
+
+```bash
+export L4STACK_MAPTRV2_COMMAND='docker exec -i l4stack-perception-maptr <maptrv2-jsonl-worker>'
 ```
 
-nuScenes model koordinatlarını CARLA koordinatı gibi döndürmek yasaktır; dönüşüm backend
-içinde açıkça yapılmalıdır.
+Worker `torch.inference_mode`, autocast FP16/BF16, persistent CUDA buffer ve
+`cudaMallocAsync` allocator kullanmalıdır. CPU inference yolu yasaktır.
